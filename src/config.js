@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const voices = ['marin', 'cedar', 'alloy', 'ash', 'ballad', 'coral', 'echo', 'sage', 'shimmer', 'verse'];
-export const model = process.env.OPENAI_REALTIME_MODEL || 'gpt-realtime-1.5';
+export const model = process.env.STRATA_MODEL?.trim() || '';
 export function parseGuildIds(env = process.env) {
   const raw = env.DISCORD_GUILD_IDS ?? env.DISCORD_GUILD_ID ?? '';
   if (!raw.trim() || raw.trim() === '*') return new Set();
@@ -21,24 +21,24 @@ export function requireEnv(names) {
   for (const name of names) if (!process.env[name]?.trim()) throw new Error(`.env에 ${name} 값을 입력하세요.`);
   if (!Number.isFinite(idleMinutes) || idleMinutes < 1) throw new Error('IDLE_MINUTES는 1 이상의 숫자여야 합니다.');
 }
-export function validateSettings(value) {
-  // Upgrade v1 saved settings without losing persona/voice/volume.
-  value = { model, silenceSeconds: 0.85, overlap: true, interrupt: true, vadThreshold: 0.5, ...value };
+export function validateSettings(value, defaultModel = model) {
+  // Apply defaults without confusing a saved LLM selection with a legacy voice model.
+  value = { model: defaultModel, silenceSeconds: 0.85, overlap: true, interrupt: true, vadThreshold: 0.5, ...value };
   if (typeof value.persona !== 'string' || !value.persona.trim() || value.persona.length > 12000) throw new Error('프롬프트는 1~12000자로 입력하세요.');
   if (!voices.includes(value.voice)) throw new Error('지원하지 않는 목소리입니다.');
   if (!Number.isFinite(value.volume) || value.volume < 0 || value.volume > 2) throw new Error('볼륨은 0~200%입니다.');
   if (!Number.isFinite(value.speed) || value.speed < 0.25 || value.speed > 1.5) throw new Error('속도는 0.25~1.5입니다.');
-  if (typeof value.model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,119}$/.test(value.model)) throw new Error('올바른 Realtime 음성 모델 ID를 입력하세요.');
+  if (typeof value.model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,199}$/.test(value.model)) throw new Error('올바른 Strata 모델 ID를 입력하세요. STRATA_MODEL 설정을 확인하세요.');
   if (!Number.isFinite(value.silenceSeconds) || value.silenceSeconds < 0.2 || value.silenceSeconds > 5) throw new Error('침묵 대기 시간은 0.2~5초입니다.');
   if (typeof value.overlap !== 'boolean' || typeof value.interrupt !== 'boolean') throw new Error('겹침 수신과 자동 끼어들기 설정은 켜기/끄기여야 합니다.');
   if (!Number.isFinite(value.vadThreshold) || value.vadThreshold < 0.1 || value.vadThreshold > 0.9) throw new Error('음성 감지 기준은 0.1~0.9입니다.');
-  return { persona: value.persona, voice: value.voice, volume: value.volume, speed: value.speed,
+  return { schemaVersion: 3, persona: value.persona, voice: value.voice, volume: value.volume, speed: value.speed,
     model: value.model, silenceSeconds: value.silenceSeconds, overlap: value.overlap, interrupt: value.interrupt, vadThreshold: value.vadThreshold };
 }
 export class SettingsStore {
-  constructor(directory = path.join(root, 'data'), persona = fs.readFileSync(path.join(root, 'persona.txt'), 'utf8')) {
+  constructor(directory = path.join(root, 'data'), persona = fs.readFileSync(path.join(root, 'persona.txt'), 'utf8'), defaultModel = model) {
     this.directory = directory;
-    this.defaults = validateSettings({ persona, voice: 'marin', volume: 0.8, speed: 1 });
+    this.defaults = validateSettings({ persona, voice: 'marin', volume: 0.8, speed: 1, model: defaultModel });
   }
   file(id) {
     if (!/^\d+$/.test(id)) throw new Error('Invalid guild ID');
@@ -46,7 +46,11 @@ export class SettingsStore {
   }
   get(id) {
     const file = this.file(id);
-    return fs.existsSync(file) ? validateSettings(JSON.parse(fs.readFileSync(file, 'utf8'))) : { ...this.defaults };
+    if (!fs.existsSync(file)) return { ...this.defaults };
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+    // v1/v2 model selected a speech-to-speech model, never a Strata model.
+    if (!saved.schemaVersion || saved.schemaVersion < 3) saved.model = this.defaults.model;
+    return validateSettings(saved, this.defaults.model);
   }
   save(id, settings) {
     const valid = validateSettings(settings);
@@ -57,3 +61,4 @@ export class SettingsStore {
     return valid;
   }
 }
+
