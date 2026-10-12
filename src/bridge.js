@@ -1,20 +1,24 @@
 import { PassThrough } from 'node:stream';
 import prism from 'prism-media';
 import { AudioPlayerStatus, createAudioPlayer, createAudioResource, EndBehaviorType, StreamType, VoiceConnectionStatus } from '@discordjs/voice';
-import { Realtime } from './realtime.js';
+import { VoiceSession } from './voice-session.js';
+import { serviceConfig } from './services.js';
 import { DiscordPCM } from './audio.js';
 import { VoiceMixer, FRAME_BYTES } from './mixer.js';
 import { idleMinutes, validateSettings } from './config.js';
 
 export class Bridge {
-  constructor({ connection, channel, owner, settings, notify, onClose, apiFactory = options => new Realtime(options), player = createAudioPlayer() }) {
+  constructor({ connection, channel, owner, settings, notify, onClose, apiFactory = options => new VoiceSession(options), player = createAudioPlayer() }) {
     Object.assign(this, { connection, channel, owner, notify, onClose, apiFactory, player });
     this.settings = validateSettings(settings);
+    this.services = serviceConfig();
     this.listeners = new Set([owner]); this.inputs = new Map();
     this.mixer = new VoiceMixer({ overlap: this.settings.overlap });
     this.connection.subscribe(this.player);
     this.player.on('error', () => this.fail(new Error('음성 재생 실패. Opus 라이브러리를 확인하세요.')));
-    this.player.on(AudioPlayerStatus.Idle, () => { if (!this.clearingPlayback) this.maybeRespond(); });
+    this.player.on(AudioPlayerStatus.Idle, () => {
+      if (!this.clearingPlayback) { this.api?.playbackFinished?.(); this.maybeRespond(); }
+    });
     this.lastActivity = Date.now(); this.closed = false; this.changing = false;
     this.speech = false; this.pendingTurn = false; this.ignoreCommit = false;
     this.connection.on('error', () => this.fail(new Error('디스코드 음성 연결 오류')));
@@ -36,7 +40,7 @@ export class Bridge {
     if (this.closed) throw new Error('연결이 종료되었습니다.');
     const next = validateSettings(settings);
     this.changing = true;
-    const api = this.apiFactory({ key: process.env.OPENAI_API_KEY, model: next.model, settings: next });
+    const api = this.apiFactory({ key: process.env.OPENAI_API_KEY, model: next.model, settings: next, services: this.services });
     // Validate a replacement connection before retiring the old session.
     api.on('fault', error => { if (this.api === api) this.fail(error); });
     try {
@@ -48,7 +52,7 @@ export class Bridge {
       clearTimeout(this.responseTimer); clearTimeout(this.lifeTimer);
       this.clearPlayback(); this.mixer.reset(); this.mixer.overlap = next.overlap;
       this.bindApi(api); this.lastActivity = Date.now();
-      this.lifeTimer = setTimeout(() => { this.notify('연결 유지 시간이 끝나 퇴장했습니다. /ai join으로 새 대화를 시작하세요.'); this.close(); }, 55 * 60000);
+      this.lifeTimer = setTimeout(() => { this.notify('연결 유지 시간이 끝나 퇴장했습니다. /ai join으로 새 대화를 시작하세요.'); this.close(); }, this.services.sessionMinutes * 60000);
       for (const id of this.listeners) this.capture(id);
     } catch (error) { api.close(); throw error; }
     finally { this.connectingApi = null; this.changing = false; this.mixer.reset(); this.maybeRespond(); }
@@ -110,7 +114,7 @@ export class Bridge {
     try {
       this.pendingTurn = false; this.clearPlayback(); this.api.respond();
       clearTimeout(this.responseTimer);
-      this.responseTimer = setTimeout(() => this.fail(new Error('AI 응답 시간이 초과되었습니다.')), 90000);
+      this.responseTimer = setTimeout(() => this.fail(new Error('AI 응답 시간이 초과되었습니다.')), this.services.responseTimeoutMs);
     } catch (error) { this.fail(error); }
   }
   setListening(id, enabled) {
@@ -137,7 +141,7 @@ export class Bridge {
   interruptOutput() {
     this.api?.stop(Math.max(0, (this.resource?.playbackDuration || 0) - 100));
     this.clearPlayback();
-    // Keep the watchdog until cancellation is acknowledged. Preserve the new user audio.
+    // The backend cancels generation; preserve the new user audio.
   }
   stop() {
     this.pendingTurn = false; this.speech = false; this.ignoreCommit = true;
@@ -159,4 +163,5 @@ export class Bridge {
     this.onClose(this);
   }
 }
+
 

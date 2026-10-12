@@ -31,15 +31,3 @@ export function turnDetection(settings) {
     // The bridge schedules replies after commit and handles cancellation itself.
     create_response: false, interrupt_response: false };
 }
-export function sessionSettings(settings, model = settings.model) {
-  return {
-    type: 'realtime', model,
-    instructions: settings.persona,
-    output_modalities: ['audio'],
-    max_output_tokens: 1200,
-    audio: {
-      input: { format: { type: 'audio/pcm', rate: 24000 }, turn_detection: turnDetection(settings) },
-      output: { format: { type: 'audio/pcm', rate: 24000 }, voice: settings.voice, speed: settings.speed },
-    },
-  };
-}

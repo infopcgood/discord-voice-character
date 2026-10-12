@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { PassThrough } from 'node:stream';
 import OpusScript from 'opusscript';
 import { Bridge } from '../src/bridge.js';
+import { VoiceSession } from '../src/voice-session.js';
 import { VoiceMixer, FRAME_BYTES } from '../src/mixer.js';
 import { validateSettings, parseGuildIds, acceptsGuild } from '../src/config.js';
 import { registerGuild } from '../src/registration.js';
@@ -33,7 +34,7 @@ function fixture(overrides = {}) {
   } };
   const users = new Map([['1', { user: { bot: false } }], ['2', { user: { bot: false } }], ['3', { user: { bot: true } }]]);
   const api = new MockApi(); const player = new MockPlayer();
-  const settings = validateSettings({ persona: 'hi', voice: 'marin', speed: 1, volume: 0.8, ...overrides });
+  const settings = validateSettings({ model: 'local/model', persona: 'hi', voice: 'marin', speed: 1, volume: 0.8, ...overrides });
   const bridge = new Bridge({ connection, channel: { members: users }, owner: '1', settings, notify() {}, onClose() {}, player, apiFactory: () => api });
   return { bridge, api, player, sources, connection };
 }
@@ -141,19 +142,19 @@ test('successful model change retires old API and keeps listener subscriptions',
   try {
     await bridge.start(); const nextApi = new MockApi(); let chosen;
     bridge.apiFactory = options => { chosen = options.model; return nextApi; };
-    await bridge.restart({ ...bridge.settings, model: 'gpt-realtime' });
-    assert.equal(chosen, 'gpt-realtime'); assert.equal(api.closed, true); assert.equal(bridge.api, nextApi);
+    await bridge.restart({ ...bridge.settings, model: 'local/other' });
+    assert.equal(chosen, 'local/other'); assert.equal(api.closed, true); assert.equal(bridge.api, nextApi);
     assert.equal(sources.get('1').destroyed, false);
   } finally { bridge.close(); }
 });
 test('independent servers never share voices, pending turns, settings or lifecycle', async () => {
-  const a = fixture(); const b = fixture({ model: 'gpt-realtime', overlap: false });
+  const a = fixture(); const b = fixture({ model: 'local/other', overlap: false });
   try {
     await a.bridge.start(); await b.bridge.start();
     a.bridge.mixer.push('1', frame(3000)); a.bridge.tick(); b.bridge.tick();
     assert.equal(a.api.frames.at(-1).readInt16LE(0), 3000); assert.equal(b.api.frames.at(-1).readInt16LE(0), 0);
     a.api.emit('committed'); assert.equal(a.api.requests, 1); assert.equal(b.api.requests, 0);
-    a.bridge.close(); assert.equal(b.api.closed, false); assert.equal(b.bridge.settings.model, 'gpt-realtime');
+    a.bridge.close(); assert.equal(b.api.closed, false); assert.equal(b.bridge.settings.model, 'local/other');
   } finally { a.bridge.close(); b.bridge.close(); }
 });
 test('manual stop drops pending input and late commit cannot restart the reply', async () => {
@@ -187,9 +188,32 @@ test('command registration targets each server and preserves unrelated commands'
 });
 test('v1 settings migrate and new setting ranges are enforced', () => {
   const base = { persona: 'original', voice: 'cedar', speed: 1, volume: 0.8 };
-  const migrated = validateSettings(base);
+  const migrated = validateSettings(base, 'local/model');
   assert.equal(migrated.persona, 'original'); assert.equal(migrated.silenceSeconds, 0.85);
   assert.equal(migrated.interrupt, true); assert.equal(migrated.overlap, true);
-  for (const patch of [{ silenceSeconds: 0 }, { silenceSeconds: 6 }, { overlap: 'true' }, { interrupt: 1 }, { model: '' }, { vadThreshold: 2 }]) assert.throws(() => validateSettings({ ...base, ...patch }));
+  for (const patch of [{ silenceSeconds: 0 }, { silenceSeconds: 6 }, { overlap: 'true' }, { interrupt: 1 }, { model: '' }, { vadThreshold: 2 }]) assert.throws(() => validateSettings({ ...base, ...patch }, 'local/model'));
 });
+
+test('real voice adapter waits for Discord playback before committing assistant history', async () => {
+  const { bridge, player } = fixture();
+  const transcription = new EventEmitter();
+  Object.assign(transcription, { async connect() {}, append() {}, clearInput() {}, close() {} });
+  const messages = [];
+  bridge.apiFactory = options => new VoiceSession({ ...options, transcription,
+    llm: { async check() {}, async *stream(input) { messages.push(structuredClone(input)); yield 'Hello.'; } },
+    speech: { async *synthesize() { yield Buffer.alloc(9600); } },
+  });
+  try {
+    await bridge.start();
+    const done = once(bridge.api, 'done');
+    transcription.emit('speechStart'); transcription.emit('speechStop'); transcription.emit('transcript', 'First question');
+    await done;
+    assert.equal(bridge.api.history.length, 1); assert.equal(player.state.status, 'playing');
+    player.state = { status: 'idle' }; player.emit('idle');
+    assert.equal(bridge.api.history.at(-1).content, 'Hello.');
+    const second = once(bridge.api, 'done'); transcription.emit('transcript', 'Second question'); await second;
+    assert.equal(messages[1][2].role, 'assistant'); assert.equal(messages[1][2].content, 'Hello.');
+  } finally { bridge.close(); }
+});
+
 

@@ -5,8 +5,10 @@ import { joinVoiceChannel, entersState, VoiceConnectionStatus } from '@discordjs
 import { SettingsStore, requireEnv, allowed, root, acceptsGuild, validateSettings } from './config.js';
 import { Bridge } from './bridge.js';
 import { registerGuild } from './registration.js';
+import { requireServices } from './services.js';
 
-requireEnv(['DISCORD_TOKEN', 'OPENAI_API_KEY']);
+requireEnv(['DISCORD_TOKEN']);
+const services = requireServices();
 const store = new SettingsStore();
 const sessions = new Map();
 const locks = new Set();
@@ -45,7 +47,7 @@ client.on(Events.InteractionCreate, async interaction => {
     const action = interaction.isModalSubmit() ? 'save-persona' : interaction.options.getSubcommand();
     if (action === 'status') {
       const s = store.get(interaction.guildId);
-      await reply(interaction, `연결: ${session ? `<#${session.channel.id}>` : '퇴장 상태'}\n목소리: ${s.voice} · 볼륨: ${Math.round(s.volume * 100)}% · 속도: ${s.speed}\n모델: ${s.model}\n침묵: ${s.silenceSeconds}초 · 겹침 수신: ${s.overlap ? '켜짐' : '꺼짐'} · 자동 끼어들기: ${s.interrupt ? '켜짐' : '꺼짐'} · 감지 기준: ${s.vadThreshold}\n수신 참여자: ${session?.listeners.size || 0}명\n${session ? (session.busy ? '발화 처리 / AI 응답 중' : '듣기 준비됨') : '/ai join으로 시작하세요.'}\n프롬프트: ${s.persona.length}자 (서버별 저장)`);
+      await reply(interaction, `연결: ${session ? `<#${session.channel.id}>` : '퇴장 상태'}\n목소리: ${s.voice} · 볼륨: ${Math.round(s.volume * 100)}% · 속도: ${s.speed}\nLLM: Strata / ${s.model}\n음성 인식: OpenAI / ${services.transcriptionModel} · 합성: OpenAI / ${services.ttsModel}\n침묵: ${s.silenceSeconds}초 · 겹침 수신: ${s.overlap ? '켜짐' : '꺼짐'} · 자동 끼어들기: ${s.interrupt ? '켜짐' : '꺼짐'} · 감지 기준: ${s.vadThreshold}\n수신 참여자: ${session?.listeners.size || 0}명\n${session ? (session.busy ? '발화 처리 / AI 응답 중' : '듣기 준비됨') : '/ai join으로 시작하세요.'}\n프롬프트: ${s.persona.length}자 (서버별 저장)`);
       return;
     }
     if (locks.has(interaction.guildId)) throw new Error('설정 또는 연결을 처리 중입니다. 잠시 후 다시 시도하세요.');
@@ -60,7 +62,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (!interaction.channel?.permissionsFor(me)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages])) throw new Error('현재 텍스트 채널에 봇의 보기·메시지 보내기 권한을 주세요.');
       const settings = store.get(interaction.guildId);
       // Public acknowledgement explains what audio is sent before the bot starts listening.
-      await interaction.reply({ content: 'AI 음성 대화를 연결합니다. 명령을 실행한 사람의 음성이 OpenAI로 전송되며, AI가 만든 목소리로 응답합니다. 다른 사람은 /ai listen enabled:True로 참여할 수 있습니다.', allowedMentions: { parse: [] } });
+      await interaction.reply({ content: 'AI 음성 대화를 연결합니다. 음성 인식과 합성은 OpenAI를 사용합니다. 인식된 대화문과 캐릭터 프롬프트는 설정된 Strata 서버로 보내 답변을 만들며, AI가 만든 목소리로 응답합니다. 다른 사람은 /ai listen enabled:True로 참여할 수 있습니다.', allowedMentions: { parse: [] } });
       const connection = joinVoiceChannel({ channelId: channel.id, guildId: channel.guild.id, adapterCreator: channel.guild.voiceAdapterCreator, selfDeaf: false, selfMute: false });
       const notify = text => interaction.channel.send({ content: text.slice(0, 1900), allowedMentions: { parse: [] } }).catch(() => {});
       const bridge = new Bridge({ connection, channel, owner: member.id, settings, notify,
@@ -69,7 +71,7 @@ client.on(Events.InteractionCreate, async interaction => {
       sessions.set(interaction.guildId, bridge);
       try { await entersState(connection, VoiceConnectionStatus.Ready, 20000); await bridge.start(); }
       catch (error) { bridge.close(); throw error; }
-      await reply(interaction, `연결 완료: <#${channel.id}>. ${member.displayName}님의 목소리를 OpenAI로 전송합니다. AI가 만든 목소리로 응답합니다.\n말을 마친 뒤 잠시 기다리세요. 다른 참가자: /ai listen enabled:True · 응답 중지: /ai stop · 종료: /ai leave`);
+      await reply(interaction, `연결 완료: <#${channel.id}>. ${member.displayName}님의 음성은 OpenAI에서 인식하고, 대화문은 Strata에서 처리합니다. 답변 텍스트를 OpenAI로 보내 AI 목소리로 합성합니다.\n말을 마친 뒤 잠시 기다리세요. 다른 참가자: /ai listen enabled:True · 응답 중지: /ai stop · 종료: /ai leave`);
       return;
     }
 
@@ -77,7 +79,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (!session || !sameChannel(member, session)) throw new Error('봇과 같은 음성채널에 있어야 합니다.');
       const enabled = interaction.options.getBoolean('enabled', true);
       session.setListening(member.id, enabled);
-      await reply(interaction, enabled ? '내 목소리를 AI에 전송합니다. 생성된 답변은 채널 참가자 모두에게 들립니다.' : '이제 내 목소리를 전송하지 않습니다. 이미 보낸 발화는 취소되지 않습니다.');
+      await reply(interaction, enabled ? '내 음성은 OpenAI에서 인식하고 대화문은 Strata로 전송합니다. 답변은 OpenAI가 합성하며 채널 참가자 모두에게 들립니다.' : '이제 내 목소리를 전송하지 않습니다. 이미 보낸 발화는 취소되지 않습니다.');
       return;
     }
     if (action === 'stop') {
@@ -152,3 +154,4 @@ for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {
   client.destroy(); process.exit(0);
 });
 client.login(process.env.DISCORD_TOKEN).catch(() => { console.error('로그인 실패: DISCORD_TOKEN과 인터넷 연결을 확인하세요.'); process.exitCode = 1; });
+
