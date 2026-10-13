@@ -22,7 +22,7 @@ export function serviceConfig(env = process.env) {
   return {
     baseURL, apiKey: env.STRATA_API_KEY?.trim() || '',
     transcriptionModel, transcriptionLanguage: env.OPENAI_TRANSCRIBE_LANGUAGE?.trim() || '', ttsModel,
-    maxTokens: integer('STRATA_MAX_TOKENS', 512, 1, 8192),
+    maxTokens: integer('STRATA_MAX_TOKENS', 128000, 1, 128000),
     concurrency: integer('STRATA_MAX_CONCURRENT', 1, 1, 16),
     requestTimeoutMs: integer('STRATA_TIMEOUT_MS', 60000, 1000, 300000),
     responseTimeoutMs: integer('RESPONSE_TIMEOUT_MS', 180000, 1000, 600000),
