@@ -123,7 +123,24 @@ test('cancelling active TTS aborts its signal and blocks late PCM', async () => 
 test('manual stop clears pending recognition; listening changes preserve conversation', async () => {
   const f = fixture(); await f.session.connect();
   try {
-    await reply(f); f.session.playbackFinis…294 tokens truncated…wait f.session.connect();
+    await reply(f); f.session.playbackFinished();
+    f.transcription.emit('transcript', 'pending'); f.session.clearInput(); f.session.stop();
+    assert.deepEqual(f.session.pending, []); assert.equal(f.transcription.cleared, true);
+    const history = structuredClone(f.session.history);
+    await f.session.updateListening({ ...f.session.settings, silenceSeconds: 2 });
+    assert.deepEqual(f.session.history, history); assert.equal(f.transcription.settings.silenceSeconds, 2);
+  } finally { f.session.close(); }
+});
+
+test('history budget drops old turns and never truncates the character prompt or newest user input', () => {
+  const f = fixture({ services: { ...serviceConfig(), historyChars: 49 }, settings: { persona: 'persona' } });
+  f.session.history = [{ role: 'user', content: 'x'.repeat(20) }, { role: 'assistant', content: 'y'.repeat(20) }];
+  assert.deepEqual(f.session.messages('new'), [{ role: 'system', content: 'persona' }, { role: 'user', content: 'new' }]);
+  assert.throws(() => f.session.messages('z'.repeat(50)), /HISTORY_MAX_CHARS/); f.session.close();
+});
+
+test('short conversations keep the same request prefix beyond twenty exchanges', async () => {
+  const f = fixture(); await f.session.connect();
   try {
     for (let i = 0; i < 30; i++) {
       const input = `Question ${i}`;
