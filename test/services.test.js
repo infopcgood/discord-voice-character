@@ -16,6 +16,9 @@ test('configuration requires explicit local endpoint/model and independent cloud
   const env = { OPENAI_API_KEY: 'cloud', STRATA_BASE_URL: 'http://127.0.0.1:8000/v1/', STRATA_MODEL: 'org/model' };
   assert.equal(requireServices(env).baseURL, 'http://127.0.0.1:8000/v1');
   assert.equal(requireServices(env).apiKey, '');
+  assert.equal(requireServices(env).maxTokens, 128000);
+  assert.equal(serviceConfig({ ...env, STRATA_MAX_TOKENS: '128000' }).maxTokens, 128000);
+  assert.throws(() => serviceConfig({ ...env, STRATA_MAX_TOKENS: '128001' }), /128000/);
   for (const field of ['OPENAI_API_KEY', 'STRATA_BASE_URL', 'STRATA_MODEL']) assert.throws(() => requireServices({ ...env, [field]: '' }), new RegExp(field));
   for (const url of ['file:///tmp/model', 'http://user:pass@localhost/v1', 'http://localhost/v1?key=secret']) assert.throws(() => serviceConfig({ ...env, STRATA_BASE_URL: url }));
   assert.throws(() => serviceConfig({ STRATA_MAX_CONCURRENT: 'NaN' }));
