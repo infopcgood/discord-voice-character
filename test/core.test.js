@@ -36,10 +36,30 @@ test('settings persist per guild and reject unsafe paths or invalid values', () 
 });
 test('all requested slash controls serialize successfully', () => {
   const names = commands[0].options.map(x => x.name);
-  for (const name of ['join', 'leave', 'act', 'persona', 'voice', 'volume', 'speed', 'listen', 'stop', 'reset', 'silence', 'overlap', 'interrupt', 'model', 'sensitivity']) assert.ok(names.includes(name));
+  for (const name of ['join', 'leave', 'chat', 'act', 'visibility', 'persona', 'voice', 'volume', 'speed', 'listen', 'stop', 'reset', 'silence', 'overlap', 'interrupt', 'model', 'sensitivity']) assert.ok(names.includes(name));
   const text = commands[0].options.find(x => x.name === 'act').options[0];
   assert.equal(text.name, 'text'); assert.equal(text.required, true);
   assert.equal(text.min_length, 1); assert.equal(text.max_length, 2000);
+  const chat = commands[0].options.find(x => x.name === 'chat').options[0];
+  assert.equal(chat.name, 'text'); assert.equal(chat.required, true); assert.equal(chat.max_length, 2000);
+  const visibility = commands[0].options.find(x => x.name === 'visibility').options[0];
+  assert.equal(visibility.name, 'mode'); assert.equal(visibility.required, true);
+  assert.deepEqual(visibility.choices.map(choice => choice.value), ['public', 'private']);
+});
+
+test('visibility defaults to public for old settings and persists per server', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-visibility-'));
+  try {
+    const store = new SettingsStore(directory, 'persona', 'local/model');
+    const old = { ...settings }; delete old.visibility;
+    fs.writeFileSync(store.file('123'), JSON.stringify(old));
+    assert.equal(store.get('123').visibility, 'public');
+    store.save('123', { ...store.get('123'), visibility: 'private' });
+    const reloaded = new SettingsStore(directory, 'persona', 'local/model');
+    assert.equal(reloaded.get('123').visibility, 'private');
+    assert.equal(reloaded.get('456').visibility, 'public');
+    assert.throws(() => validateSettings({ ...settings, visibility: 'everyone' }), /public/);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
 test('v2 speech models migrate once; v3 server-specific Strata models survive default changes', () => {

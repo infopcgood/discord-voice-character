@@ -22,7 +22,7 @@ export function requireEnv(names) {
 }
 export function validateSettings(value, defaultModel = model) {
   // Apply defaults without confusing a saved LLM selection with a legacy voice model.
-  value = { model: defaultModel, silenceSeconds: 0.85, overlap: true, interrupt: true, vadThreshold: 0.5, ...value };
+  value = { model: defaultModel, silenceSeconds: 0.85, overlap: true, interrupt: true, vadThreshold: 0.5, visibility: 'public', ...value };
   if (typeof value.persona !== 'string' || !value.persona.trim() || value.persona.length > 12000) throw new Error('프롬프트는 1~12000자로 입력하세요.');
   if (value.voice !== 'default' && (typeof value.voice !== 'string' || !/^[a-zA-Z0-9_-]{8,128}$/.test(value.voice))) throw new Error('ElevenLabs Voice ID 또는 default를 입력하세요.');
   if (!Number.isFinite(value.volume) || value.volume < 0 || value.volume > 2) throw new Error('볼륨은 0~200%입니다.');
@@ -30,9 +30,10 @@ export function validateSettings(value, defaultModel = model) {
   if (typeof value.model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,199}$/.test(value.model)) throw new Error('올바른 Strata 모델 ID를 입력하세요. STRATA_MODEL 설정을 확인하세요.');
   if (!Number.isFinite(value.silenceSeconds) || value.silenceSeconds < 0.3 || value.silenceSeconds > 3) throw new Error('침묵 대기 시간은 0.3~3초입니다.');
   if (typeof value.overlap !== 'boolean' || typeof value.interrupt !== 'boolean') throw new Error('겹침 수신과 자동 끼어들기 설정은 켜기/끄기여야 합니다.');
+  if (!['public', 'private'].includes(value.visibility)) throw new Error('텍스트 공개 범위는 public 또는 private입니다.');
   if (!Number.isFinite(value.vadThreshold) || value.vadThreshold < 0.1 || value.vadThreshold > 0.9) throw new Error('음성 감지 기준은 0.1~0.9입니다.');
   return { schemaVersion: 4, persona: value.persona, voice: value.voice, volume: value.volume, speed: value.speed,
-    model: value.model, silenceSeconds: value.silenceSeconds, overlap: value.overlap, interrupt: value.interrupt, vadThreshold: value.vadThreshold };
+    model: value.model, silenceSeconds: value.silenceSeconds, overlap: value.overlap, interrupt: value.interrupt, vadThreshold: value.vadThreshold, visibility: value.visibility };
 }
 export class SettingsStore {
   constructor(directory = path.join(root, 'data'), persona = fs.readFileSync(path.join(root, 'persona.txt'), 'utf8'), defaultModel = model) {

@@ -4,6 +4,7 @@ import { StrataClient } from './llm.js';
 import { ElevenLabsSpeech } from './speech.js';
 import { serviceConfig } from './services.js';
 import { formatAction } from './actions.js';
+import { conversationMessages } from './conversation.js';
 
 // Bound each TTS request and start speaking once a sentence is available.
 export function takeSpeechChunk(text, flush = false) {
@@ -60,24 +61,9 @@ export class VoiceSession extends EventEmitter {
   clearInput() { this.pending = []; this.transcription.clearInput(); }
   async updateListening(settings) { await this.transcription.updateListening(settings); this.settings = settings; }
   messages(user) {
-    const system = { role: 'system', content: this.settings.persona };
-    const current = { role: 'user', content: user };
-    const requiredChars = system.content.length + current.content.length;
-    const limit = this.services.historyChars;
-    if (requiredChars > limit) throw new Error('프롬프트와 현재 발화가 HISTORY_MAX_CHARS 한도를 넘습니다.');
-    let chars = requiredChars + this.history.reduce((sum, message) => sum + message.content.length, 0);
-    if (chars > limit) {
-      // Dropping the oldest turn changes the prompt prefix and invalidates its
-      // cached state. Trim in batches so subsequent turns can reuse it again.
-      const target = Math.max(requiredChars, Math.floor(limit * 0.75));
-      let removed = 0;
-      while (removed < this.history.length && (chars > target || this.history[removed].role === 'assistant')) {
-        chars -= this.history[removed++].content.length;
-      }
-      this.history = this.history.slice(removed);
-    }
-    this.history.push(current);
-    return [system, ...this.history];
+    const messages = conversationMessages(this.settings.persona, this.history, user, this.services.historyChars);
+    this.history = messages.slice(1);
+    return messages;
   }
   respond() {
     if (!this.ready || this.closed || this.generating || !this.pending.length) throw new Error('AI가 아직 준비되지 않았습니다.');

@@ -2,19 +2,29 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Client, GatewayIntentBits, Events, PermissionFlagsBits, ChannelType, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } from 'discord.js';
 import { joinVoiceChannel, entersState, VoiceConnectionStatus } from '@discordjs/voice';
-import { SettingsStore, requireEnv, allowed, root, acceptsGuild, validateSettings } from './config.js';
+import { SettingsStore, requireEnv, allowed, root, acceptsGuild, validateSettings, idleMinutes } from './config.js';
 import { Bridge } from './bridge.js';
 import { registerGuild } from './registration.js';
 import { requireServices } from './services.js';
-import { submitAction } from './actions.js';
+import { formatAction, submitAction } from './actions.js';
 import { ListeningStore, restoreListening, saveListening } from './listening.js';
+import { TextSession, formatChat, messagePayload, publishCommandInput, textSessionKey, closeTextSessions } from './text-chat.js';
 
 requireEnv(['DISCORD_TOKEN']);
 const services = requireServices();
 const store = new SettingsStore();
 const listeningStore = new ListeningStore(path.join(root, 'data', 'listening'));
 const sessions = new Map();
+const textSessions = new Map();
 const locks = new Set();
+const textIdleTimer = setInterval(() => {
+  for (const [key, session] of textSessions) {
+    if (!session.busy && Date.now() - session.lastActivity > idleMinutes * 60000) {
+      session.close(); textSessions.delete(key);
+    }
+  }
+}, 15000);
+textIdleTimer.unref();
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates], allowedMentions: { parse: [] } });
 async function syncGuild(guild) {
   if (!acceptsGuild(guild.id)) return;
@@ -23,15 +33,28 @@ async function syncGuild(guild) {
 }
 client.once(Events.ClientReady, async bot => {
   for (const guild of bot.guilds.cache.values()) await syncGuild(guild);
-  console.log(`${bot.user.tag} 준비 완료. 각 서버의 음성채널에서 /ai join을 사용하세요.`);
+  console.log(`${bot.user.tag} 준비 완료. 음성: /ai join · 텍스트: /ai chat text:할 말`);
 });
 client.on(Events.GuildCreate, syncGuild);
-client.on(Events.GuildDelete, guild => sessions.get(guild.id)?.close());
+client.on(Events.GuildDelete, guild => { sessions.get(guild.id)?.close(); closeTextSessions(textSessions, guild.id); });
+client.on(Events.ChannelDelete, channel => closeTextSessions(textSessions, channel.guildId, channel.id));
 
 function sameChannel(member, session) { return member.voice.channelId === session?.channel.id; }
 function canControl(member, session) {
   return member.permissions.has(PermissionFlagsBits.ManageGuild) ||
     (session ? member.id === session.owner && sameChannel(member, session) : allowed.has(member.id));
+}
+function canControlText(member, session) {
+  return member.permissions.has(PermissionFlagsBits.ManageGuild) || member.id === session?.owner;
+}
+function requireChatChannel(interaction, textOnly = true) {
+  const channel = interaction.channel;
+  const types = [ChannelType.GuildText, ChannelType.GuildAnnouncement, ChannelType.PublicThread, ChannelType.PrivateThread, ChannelType.AnnouncementThread];
+  if (!channel || (textOnly && !types.includes(channel.type))) throw new Error('서버의 텍스트 채널이나 스레드에서 사용하세요.');
+  const send = channel.isThread() ? PermissionFlagsBits.SendMessagesInThreads : PermissionFlagsBits.SendMessages;
+  if (!channel.permissionsFor(interaction.guild.members.me)?.has([PermissionFlagsBits.ViewChannel, send])) {
+    throw new Error('현재 채널에 봇의 보기·메시지 보내기 권한을 주세요.');
+  }
 }
 async function reply(interaction, content) {
   const payload = { content, allowedMentions: { parse: [] } };
@@ -41,18 +64,23 @@ async function reply(interaction, content) {
 client.on(Events.InteractionCreate, async interaction => {
   if (!(interaction.isChatInputCommand() && interaction.commandName === 'ai') &&
       !(interaction.isModalSubmit() && interaction.customId === 'ai-persona')) return;
-  let locked = false;
+  let locked = false; let conversationCommand = false;
   try {
     if (!interaction.inGuild() || !acceptsGuild(interaction.guildId)) throw new Error('허용된 서버에서만 사용할 수 있습니다.');
     const member = await interaction.guild.members.fetch(interaction.user.id);
     if (allowed.size && !allowed.has(member.id)) throw new Error('이 봇의 사용 허용 목록에 없는 사용자입니다.');
     const session = sessions.get(interaction.guildId);
+    const settings = store.get(interaction.guildId);
+    const key = textSessionKey(interaction.guildId, interaction.channelId, settings.visibility, member.id);
+    const textSession = textSessions.get(key);
     const action = interaction.isModalSubmit() ? 'save-persona' : interaction.options.getSubcommand();
     if (action === 'status') {
       const s = store.get(interaction.guildId);
       const listen = listeningStore.get(interaction.guildId, member.id);
       const listenStatus = listen === undefined ? '미설정 (봇을 부른 사용자만 기본 켜짐)' : listen ? '켜짐 (저장됨)' : '꺼짐 (저장됨)';
       await reply(interaction, `연결: ${session ? `<#${session.channel.id}>` : '퇴장 상태'}\n목소리: ${s.voice === 'default' ? services.voiceId : s.voice} · 볼륨: ${Math.round(s.volume * 100)}% · 속도: ${s.speed}\nLLM: Strata / ${s.model}\n음성 인식: ElevenLabs / ${services.transcriptionModel} · 합성: ElevenLabs / ${services.ttsModel}\n침묵: ${s.silenceSeconds}초 · 겹침 수신: ${s.overlap ? '켜짐' : '꺼짐'} · 자동 끼어들기: ${s.interrupt ? '켜짐' : '꺼짐'} · 감지 기준: ${s.vadThreshold}\n내 음성 수신 설정: ${listenStatus} · 현재 ${session?.listeners.has(member.id) ? '수신 중' : '수신 안 함'}\n수신 참여자: ${session?.listeners.size || 0}명\n${session ? (session.busy ? '발화 처리 / AI 응답 중' : '듣기 준비됨') : '/ai join으로 시작하세요.'}\n프롬프트: ${s.persona.length}자 (서버별 저장)`);
+      // Status is private, like the other settings controls.
+      await interaction.followUp(messagePayload(`텍스트 공개 범위: ${settings.visibility} (서버별 저장)\n${settings.visibility === 'private' ? '내' : '이 채널의'} 텍스트 대화: ${textSession ? (textSession.busy ? '응답 중' : `기억 ${textSession.history.length}개 메시지`) : '없음 · /ai chat text:할 말로 시작'}`, 'private'));
       return;
     }
     if (locks.has(interaction.guildId)) throw new Error('설정 또는 연결을 처리 중입니다. 잠시 후 다시 시도하세요.');
@@ -84,9 +112,30 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
 
-    if (action === 'act') {
-      submitAction(member, session, interaction.options.getString('text', true));
-      await reply(interaction, '행동을 전달했습니다. 캐릭터가 대화 순서에 따라 음성으로 반응합니다.');
+    if (action === 'chat' || action === 'act') {
+      const text = interaction.options.getString('text', true);
+      const useText = action === 'chat' || Boolean(textSession) || !sameChannel(member, session);
+      requireChatChannel(interaction, useText);
+      conversationCommand = true;
+      if (!useText) {
+        submitAction(member, session, text);
+        await publishCommandInput(interaction, action, text, member.displayName, settings.visibility);
+        return;
+      }
+      const input = action === 'act' ? formatAction(text, member.displayName) : formatChat(text, member.displayName);
+      let chat = textSession;
+      if (!chat) {
+        chat = new TextSession({ guildId: interaction.guildId, channelId: interaction.channelId, owner: member.id,
+          settings, services });
+        textSessions.set(key, chat);
+      }
+      const response = chat.respond(input, {
+        publishInput: () => publishCommandInput(interaction, action, text, member.displayName, settings.visibility),
+        publishReply: content => interaction.followUp(messagePayload(content, settings.visibility)),
+      });
+      // A long LLM request must not lock out /ai stop or other channels.
+      locks.delete(interaction.guildId); locked = false;
+      await response;
       return;
     }
     if (action === 'listen') {
@@ -97,10 +146,20 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
     if (action === 'stop') {
+      if (textSession) {
+        textSession.stop(); await reply(interaction, '이 채널의 텍스트 응답을 중지했습니다. 대화 기억은 유지됩니다.'); return;
+      }
       if (!session || !sameChannel(member, session) || (!session.listeners.has(member.id) && !canControl(member, session))) throw new Error('봇과 같은 음성채널의 대화 참가자만 중지할 수 있습니다.');
       session.stop(); await reply(interaction, '현재 응답을 중지했습니다. 잠시 후 다시 말하세요.'); return;
     }
-    if (!canControl(member, session)) throw new Error('봇을 부른 사용자(같은 음성채널) 또는 서버 관리자가 설정할 수 있습니다. 먼저 /ai join으로 시작하세요.');
+    if (action === 'reset' && textSession) {
+      if (!canControlText(member, textSession)) throw new Error('이 채널의 텍스트 대화를 시작한 사용자 또는 서버 관리자가 초기화할 수 있습니다.');
+      textSession.close(); textSessions.delete(key);
+      await reply(interaction, '이 채널의 텍스트 대화 기억을 초기화했습니다. 캐릭터 설정은 유지합니다.'); return;
+    }
+    if (!canControl(member, session) && !(!session && canControlText(member, textSession))) {
+      throw new Error('대화를 시작한 사용자 또는 서버 관리자가 설정할 수 있습니다. 음성 연결 중에는 봇을 부른 사용자가 같은 음성채널에 있어야 합니다.');
+    }
     if (action === 'persona') {
       const persona = store.get(interaction.guildId).persona;
       const input = new TextInputBuilder().setCustomId('text').setLabel('캐릭터 프롬프트 · 저장하면 대화 기억 초기화').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000);
@@ -126,13 +185,19 @@ client.on(Events.InteractionCreate, async interaction => {
     else if (action === 'volume') next.volume = interaction.options.getInteger('percent', true) / 100;
     else if (action === 'speed') next.speed = interaction.options.getNumber('value', true);
     else if (action === 'model') next.model = interaction.options.getString('name', true);
+    else if (action === 'visibility') next.visibility = interaction.options.getString('mode', true);
     else if (action === 'silence') next.silenceSeconds = interaction.options.getNumber('seconds', true);
     else if (action === 'overlap') next.overlap = interaction.options.getBoolean('enabled', true);
     else if (action === 'interrupt') next.interrupt = interaction.options.getBoolean('enabled', true);
     else if (action === 'sensitivity') next.vadThreshold = interaction.options.getNumber('threshold', true);
     else throw new Error('지원하지 않는 명령입니다.');
     validateSettings(next);
-    if (action === 'volume') {
+    if (action === 'visibility') {
+      store.save(interaction.guildId, next);
+      // Never carry shared history into private sessions or private text into a public one.
+      if (next.visibility !== settings.visibility) closeTextSessions(textSessions, interaction.guildId);
+      await reply(interaction, `텍스트 공개 범위를 ${next.visibility}로 저장했습니다. /ai chat 입력·답변과 /ai act 입력에 적용됩니다.${next.visibility !== settings.visibility ? ' 이 서버의 텍스트 대화 기억을 초기화했습니다.' : ''} 음성 답변은 공개 범위와 관계없이 음성채널 참가자 모두에게 들립니다.`);
+    } else if (action === 'volume') {
       session?.setVolume(next.volume);
       store.save(interaction.guildId, next);
       await reply(interaction, `볼륨을 ${Math.round(next.volume * 100)}%로 저장했습니다.`);
@@ -143,11 +208,16 @@ client.on(Events.InteractionCreate, async interaction => {
     } else {
       if (session) await session.restart(next);
       store.save(interaction.guildId, next);
-      await reply(interaction, `설정을 저장했습니다. 모델: ${next.model}, 목소리: ${next.voice}, 속도: ${next.speed}.${session ? ' 새 대화로 연결했습니다 (기억 초기화).' : ' 다음 입장부터 적용됩니다. 모델 사용 가능 여부는 입장할 때 확인합니다.'}`);
+      if (['save-persona', 'reload', 'model'].includes(action)) closeTextSessions(textSessions, interaction.guildId);
+      await reply(interaction, `설정을 저장했습니다. 모델: ${next.model}, 목소리: ${next.voice}, 속도: ${next.speed}.${session ? ' 새 음성 대화로 연결했습니다 (기억 초기화).' : ' 다음 대화부터 적용됩니다.'}${['save-persona', 'reload', 'model'].includes(action) ? ' 이 서버의 텍스트 대화 기억도 초기화했습니다.' : ''}`);
     }
   } catch (error) {
     console.error(error.message);
-    await reply(interaction, `처리 실패: ${error.message}`.slice(0, 1900)).catch(() => {});
+    const content = `처리 실패: ${error.message}`.slice(0, 1900);
+    // Keep the user input visible if generation or posting fails later.
+    if (conversationCommand && interaction.replied) {
+      await interaction.followUp({ ...messagePayload(content), flags: MessageFlags.Ephemeral }).catch(() => {});
+    } else await reply(interaction, content).catch(() => {});
   } finally { if (locked) locks.delete(interaction.guildId); }
 });
 
@@ -167,6 +237,8 @@ client.on(Events.VoiceStateUpdate, (before, after) => {
 client.on(Events.Error, error => console.error('Discord 연결 오류:', error.message));
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {
   for (const session of sessions.values()) session.close();
+  for (const session of textSessions.values()) session.close();
+  clearInterval(textIdleTimer);
   client.destroy(); process.exit(0);
 });
 client.login(process.env.DISCORD_TOKEN).catch(() => { console.error('로그인 실패: DISCORD_TOKEN과 인터넷 연결을 확인하세요.'); process.exitCode = 1; });
