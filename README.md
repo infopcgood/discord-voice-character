@@ -23,7 +23,7 @@ STRATA_API_KEY=
 
 위 포트와 모델 이름은 **예시**입니다. Strata 배포의 실제 값을 입력하세요. `STRATA_BASE_URL`에는 `/chat/completions` 앞부분까지 넣습니다. 봇과 Strata가 서로 다른 PC/컨테이너에서 실행되면 봇에서 접근 가능한 주소를 사용하세요. 컨테이너의 `127.0.0.1`은 해당 컨테이너 자체입니다. API 키는 저장소나 채팅에 올리지 마세요.
 
-6. Windows에서는 `start.cmd`, Linux에서는 `./start.sh`를 다시 실행합니다. 음성채널에 들어가 `/ai join`을 실행하세요. 처음에는 명령을 실행한 사람만 수신하며 다른 참가자는 `/ai listen enabled:True`로 참여합니다.
+6. Windows에서는 `start.cmd`, Linux에서는 `./start.sh`를 다시 실행합니다. 음성채널에 들어가 `/ai join`을 실행하세요. 저장된 개인별 `/ai listen` 설정을 복원합니다. 설정이 없는 사용자는 봇을 부른 사람만 기본 수신하며, 다른 참가자는 `/ai listen enabled:True`로 참여합니다.
 
 ### Linux에서 실행
 
@@ -56,8 +56,8 @@ npm start
 이 저장소에는 사용자의 Strata 배포 명세가 제공되지 않았으므로, `src/llm.js` 한 파일에 **OpenAI 호환 Chat Completions** 계약을 명시했습니다. Strata가 다른 프로토콜을 사용하면 이 어댑터를 수정해야 합니다. 실제 배포 호환성은 점검 요청과 통화로 확인하세요.
 
 - `POST {STRATA_BASE_URL}/chat/completions`
-- JSON 입력: `model`, `messages` (`system`, `user`, `assistant`), `stream`, `max_tokens`, `reasoning_effort: "none"`.
-- 모든 답변과 연결 점검 요청에 `reasoning_effort: "none"`을 보내 Strata의 thinking을 끕니다. [Strata 공식 API 설정](https://github.com/Niko1221/Strata/blob/main/docs/DETAILS.md#api)을 사용하며 별도 `.env` 설정은 필요 없습니다.
+- JSON 입력: `model`, `messages` (`system`, `user`, `assistant`), `stream`, `max_tokens`, `reasoning_effort: "low"`.
+- 모든 답변과 연결 점검 요청에 `reasoning_effort: "low"`를 보내 Strata의 thinking 강도를 낮게 설정합니다. [Strata 공식 API 설정](https://github.com/Niko1221/Strata/blob/main/docs/DETAILS.md#api)을 사용하며 별도 `.env` 설정은 필요 없습니다.
 - `stream:false` 점검: `choices[0].message`를 포함한 JSON.
 - `stream:true` 대화: `text/event-stream`, `data:` 이벤트의 `choices[0].delta.content` 텍스트, `finish_reason` 또는 `[DONE]` 종료 표시.
 - `STRATA_API_KEY`가 있을 때만 로컬 요청에 Bearer 인증을 넣습니다. ElevenLabs 키는 Strata로 보내지 않습니다.
@@ -94,7 +94,7 @@ Discord 음성을 24 kHz 모노 PCM16으로 받아 ElevenLabs **Scribe v2 Realti
 | `/ai sensitivity threshold:0.5` | VAD 감지 기준 0.1~0.9 |
 | `/ai overlap enabled:True` | 겹친 참가자 음성 혼합 |
 | `/ai interrupt enabled:True` | AI 발화 중 자동 끼어들기 |
-| `/ai listen enabled:True` | 내 음성 수신 참여 (`False`: 해제) |
+| `/ai listen enabled:True` | 내 음성 수신 설정을 사용자·서버별로 저장 (`False`: 해제) |
 | `/ai stop`, `/ai reset` | 현재 발화 취소·기억 초기화 |
 | `/ai status` | LLM·음성 서비스 및 설정 확인 |
 
@@ -102,7 +102,9 @@ Discord 음성을 24 kHz 모노 PCM16으로 받아 ElevenLabs **Scribe v2 Realti
 
 볼륨·침묵·겹침·끼어들기·감지 기준 변경은 기억을 유지합니다. 모델·목소리·속도·프롬프트 변경은 새 세션을 열며 기억을 초기화합니다. 모델·프롬프트 변경의 연결 점검에 실패하면 기존 연결과 설정을 유지합니다. 침묵·감지 기준 변경은 STT 소켓을 다시 연결하므로 진행 중인 미확정 음성과 재연결 중 입력은 버립니다. 재연결에 실패하면 오류를 표시하고 종료합니다. 목소리의 실제 합성 권한은 첫 발화 때 확인합니다. 설정은 `data/<서버ID>.json`에 저장됩니다. 모델 ID는 Strata가 실제 서비스하는 ID여야 하며 `/`도 허용합니다.
 
-기본적으로 봇을 부른 사용자(같은 음성채널)와 서버 관리자만 설정을 바꿀 수 있습니다. `ALLOWED_USER_IDS`를 지정하면 명령 사용자를 제한할 수 있습니다. 채널에서 나가면 음성 수신 참여가 해제됩니다. 스테이지 채널은 지원하지 않습니다.
+`/ai listen`의 켜짐·꺼짐은 `data/listening/<서버ID>.json`에 Discord 사용자 ID별로 저장합니다. 봇을 재시작한 뒤에도 다음 `/ai join`에서 복원되며, `/ai reset`과 캐릭터 설정 변경으로 지워지지 않습니다. 저장된 꺼짐은 봇을 부른 사용자에게도 적용됩니다. 봇과 같은 채널에 있는 사람만 수신하며 `ALLOWED_USER_IDS`에 맞지 않는 사용자와 봇은 자동 참여하지 않습니다. 다른 서버의 선택은 서로 독립적입니다. `/ai status`에서 자신의 저장 설정과 현재 수신 여부를 확인할 수 있습니다. 설정을 계속 유지하려면 배포 시 `data/` 디렉터리를 보존하세요.
+
+기본적으로 봇을 부른 사용자(같은 음성채널)와 서버 관리자만 설정을 바꿀 수 있습니다. `ALLOWED_USER_IDS`를 지정하면 명령 사용자를 제한할 수 있습니다. 채널에서 나가면 현재 수신을 중지하며 저장한 선택은 유지합니다. 다시 봇과 같은 음성채널에 들어오거나 봇을 재연결하면 개인별 설정을 복원합니다. 스테이지 채널은 지원하지 않습니다.
 
 `/ai act text:손을 흔들며 웃는다`처럼 입력하면 작성자의 서버 표시 이름과 함께 **대사가 아닌 사용자 행동**으로 Strata에 전달됩니다 (최대 2,000자, 중괄호 불필요). 행동은 현재 대화 이력에 남고 캐릭터의 답변만 ElevenLabs TTS로 읽습니다. 캐릭터 프롬프트나 TTS 말투 설정을 바꾸는 명령은 아닙니다. 봇과 같은 음성채널에 있는 허용된 사용자는 마이크 수신 참여 없이 사용할 수 있습니다. 발화나 응답이 진행 중이면 기다렸다가 처리하며, 그동안 들어온 행동과 전사문은 다음 입력에 함께 포함될 수 있습니다. `/ai stop`은 대기 중인 행동도 취소하고 `/ai reset`은 행동을 포함한 대화 기억을 지웁니다. 업데이트 후 봇을 재시작하면 새 명령이 등록됩니다.
 

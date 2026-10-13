@@ -65,8 +65,8 @@ export class StrataClient {
     const response = await this.fetchImpl(`${this.baseURL}/chat/completions`, {
       method: 'POST', redirect: 'error', signal,
       headers: { 'Content-Type': 'application/json', ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}) },
-      // Strata's documented no-thinking mode applies to both replies and probes.
-      body: JSON.stringify({ model: this.model, messages, stream, max_tokens: maxTokens, reasoning_effort: 'none' }),
+      // Use low reasoning effort for both replies and connection probes.
+      body: JSON.stringify({ model: this.model, messages, stream, max_tokens: maxTokens, reasoning_effort: 'low' }),
     });
     if (!response.ok) { await response.body?.cancel(); throw new Error(`Strata HTTP ${response.status}: API 주소, 모델 ID, 인증, 서버 로그를 확인하세요.`); }
     return response;

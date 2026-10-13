@@ -2,6 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter, once } from 'node:events';
 import { PassThrough } from 'node:stream';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { ListeningStore, restoreListening, saveListening } from '../src/listening.js';
 import OpusScript from 'opusscript';
 import { createAudioPlayer, AudioPlayerStatus, NoSubscriberBehavior, entersState } from '@discordjs/voice';
 import { Bridge } from '../src/bridge.js';
@@ -27,7 +31,7 @@ class MockPlayer extends EventEmitter {
   play(resource) { this.resource = resource; this.state = { status: 'playing', resource }; }
   stop() { const active = this.state.status !== 'idle'; this.state = { status: 'idle' }; if (active) this.emit('idle'); }
 }
-function fixture(overrides = {}, player = new MockPlayer()) {
+function fixture(overrides = {}, player = new MockPlayer(), listeners = ['1']) {
   const connection = new EventEmitter(); connection.state = { status: 'ready' }; connection.subscribe = () => {};
   connection.destroy = () => { connection.state.status = 'destroyed'; connection.emit('destroyed'); };
   const sources = new Map();
@@ -37,7 +41,7 @@ function fixture(overrides = {}, player = new MockPlayer()) {
   const users = new Map([['1', { user: { bot: false } }], ['2', { user: { bot: false } }], ['3', { user: { bot: true } }]]);
   const api = new MockApi();
   const settings = validateSettings({ model: 'local/model', persona: 'hi', voice: 'default', speed: 1, volume: 0.8, ...overrides });
-  const bridge = new Bridge({ connection, channel: { members: users }, owner: '1', settings, notify() {}, onClose() {}, player, apiFactory: () => api });
+  const bridge = new Bridge({ connection, channel: { members: users }, owner: '1', settings, notify() {}, onClose() {}, player, listeners, apiFactory: () => api });
   return { bridge, api, player, sources, connection };
 }
 function frame(value = 1000) { const pcm = Buffer.alloc(FRAME_BYTES); for (let i = 0; i < pcm.length; i += 2) pcm.writeInt16LE(value, i); return pcm; }
@@ -362,4 +366,34 @@ test('real Discord playback survives synthesis gaps and repeated replies through
     assert.ok(resources.every(resource => resource.playbackDuration >= 80 && resource.edges.length === 0));
     assert.deepEqual(failures, []);
   } finally { bridge.close(); }
+});
+
+test('saved listen choices drive actual receive subscriptions across channel and bot reconnects', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'voice-listen-bridge-'));
+  const store = new ListeningStore(directory);
+  const first = fixture({}, new MockPlayer(), []); let second;
+  try {
+    store.set('100', '1', false); store.set('100', '2', true);
+    restoreListening(first.bridge, store, '100'); await first.bridge.start();
+    assert.deepEqual([...first.sources.keys()], ['2']);
+    first.bridge.capture('1'); assert.equal(first.sources.has('1'), false);
+    const member = first.bridge.channel.members.get('2'); const originalSource = first.sources.get('2');
+    first.bridge.channel.members.delete('2');
+    restoreListening(first.bridge, store, '100', new Set(), '2');
+    assert.equal(originalSource.destroyed, true); assert.equal(first.bridge.inputs.has('2'), false);
+    assert.equal(store.get('100', '2'), true);
+    first.bridge.channel.members.set('2', member);
+    restoreListening(first.bridge, store, '100', new Set(), '2');
+    assert.notEqual(first.sources.get('2'), originalSource); assert.equal(first.bridge.inputs.has('2'), true);
+    first.bridge.close();
+    second = fixture({}, new MockPlayer(), []);
+    restoreListening(second.bridge, new ListeningStore(directory), '100'); await second.bridge.start();
+    assert.deepEqual([...second.sources.keys()], ['2']);
+    second.bridge.mixer.push('2', frame());
+    saveListening(second.bridge, store, '100', '2', false);
+    assert.equal(second.sources.get('2').destroyed, true); assert.equal(second.bridge.mixer.tracks.has('2'), false);
+    second.bridge.apiFactory = () => new MockApi(); await second.bridge.restart(second.bridge.settings);
+    assert.equal(second.bridge.inputs.size, 0); assert.equal(second.bridge.listeners.size, 0);
+    assert.equal(new ListeningStore(directory).get('100', '2'), false);
+  } finally { first.bridge.close(); second?.bridge.close(); fs.rmSync(directory, { recursive: true, force: true }); }
 });

@@ -7,10 +7,12 @@ import { Bridge } from './bridge.js';
 import { registerGuild } from './registration.js';
 import { requireServices } from './services.js';
 import { submitAction } from './actions.js';
+import { ListeningStore, restoreListening, saveListening } from './listening.js';
 
 requireEnv(['DISCORD_TOKEN']);
 const services = requireServices();
 const store = new SettingsStore();
+const listeningStore = new ListeningStore(path.join(root, 'data', 'listening'));
 const sessions = new Map();
 const locks = new Set();
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates], allowedMentions: { parse: [] } });
@@ -48,7 +50,9 @@ client.on(Events.InteractionCreate, async interaction => {
     const action = interaction.isModalSubmit() ? 'save-persona' : interaction.options.getSubcommand();
     if (action === 'status') {
       const s = store.get(interaction.guildId);
-      await reply(interaction, `연결: ${session ? `<#${session.channel.id}>` : '퇴장 상태'}\n목소리: ${s.voice === 'default' ? services.voiceId : s.voice} · 볼륨: ${Math.round(s.volume * 100)}% · 속도: ${s.speed}\nLLM: Strata / ${s.model}\n음성 인식: ElevenLabs / ${services.transcriptionModel} · 합성: ElevenLabs / ${services.ttsModel}\n침묵: ${s.silenceSeconds}초 · 겹침 수신: ${s.overlap ? '켜짐' : '꺼짐'} · 자동 끼어들기: ${s.interrupt ? '켜짐' : '꺼짐'} · 감지 기준: ${s.vadThreshold}\n수신 참여자: ${session?.listeners.size || 0}명\n${session ? (session.busy ? '발화 처리 / AI 응답 중' : '듣기 준비됨') : '/ai join으로 시작하세요.'}\n프롬프트: ${s.persona.length}자 (서버별 저장)`);
+      const listen = listeningStore.get(interaction.guildId, member.id);
+      const listenStatus = listen === undefined ? '미설정 (봇을 부른 사용자만 기본 켜짐)' : listen ? '켜짐 (저장됨)' : '꺼짐 (저장됨)';
+      await reply(interaction, `연결: ${session ? `<#${session.channel.id}>` : '퇴장 상태'}\n목소리: ${s.voice === 'default' ? services.voiceId : s.voice} · 볼륨: ${Math.round(s.volume * 100)}% · 속도: ${s.speed}\nLLM: Strata / ${s.model}\n음성 인식: ElevenLabs / ${services.transcriptionModel} · 합성: ElevenLabs / ${services.ttsModel}\n침묵: ${s.silenceSeconds}초 · 겹침 수신: ${s.overlap ? '켜짐' : '꺼짐'} · 자동 끼어들기: ${s.interrupt ? '켜짐' : '꺼짐'} · 감지 기준: ${s.vadThreshold}\n내 음성 수신 설정: ${listenStatus} · 현재 ${session?.listeners.has(member.id) ? '수신 중' : '수신 안 함'}\n수신 참여자: ${session?.listeners.size || 0}명\n${session ? (session.busy ? '발화 처리 / AI 응답 중' : '듣기 준비됨') : '/ai join으로 시작하세요.'}\n프롬프트: ${s.persona.length}자 (서버별 저장)`);
       return;
     }
     if (locks.has(interaction.guildId)) throw new Error('설정 또는 연결을 처리 중입니다. 잠시 후 다시 시도하세요.');
@@ -63,16 +67,20 @@ client.on(Events.InteractionCreate, async interaction => {
       if (!interaction.channel?.permissionsFor(me)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages])) throw new Error('현재 텍스트 채널에 봇의 보기·메시지 보내기 권한을 주세요.');
       const settings = store.get(interaction.guildId);
       // Public acknowledgement explains what audio is sent before the bot starts listening.
-      await interaction.reply({ content: 'AI 음성 대화를 연결합니다. 음성 인식과 합성은 ElevenLabs를 사용합니다. 인식된 대화문과 캐릭터 프롬프트는 설정된 Strata 서버로 보내 답변을 만들며, AI가 만든 목소리로 응답합니다. 다른 사람은 /ai listen enabled:True로 참여할 수 있습니다.', allowedMentions: { parse: [] } });
+      await interaction.reply({ content: 'AI 음성 대화를 연결합니다. 음성 인식과 합성은 ElevenLabs를 사용합니다. 인식된 대화문과 캐릭터 프롬프트는 설정된 Strata 서버로 보내 답변을 만들며, AI가 만든 목소리로 응답합니다. 이 서버에서 저장한 개인별 수신 설정을 복원합니다. /ai listen enabled:True 또는 False로 설정하면 채널 재입장과 다음 연결에도 적용됩니다.', allowedMentions: { parse: [] } });
       const connection = joinVoiceChannel({ channelId: channel.id, guildId: channel.guild.id, adapterCreator: channel.guild.voiceAdapterCreator, selfDeaf: false, selfMute: false });
       const notify = text => interaction.channel.send({ content: text.slice(0, 1900), allowedMentions: { parse: [] } }).catch(() => {});
-      const bridge = new Bridge({ connection, channel, owner: member.id, settings, notify,
+      const bridge = new Bridge({ connection, channel, owner: member.id, settings, notify, listeners: [],
         onClose: closed => { if (sessions.get(interaction.guildId) === closed) sessions.delete(interaction.guildId); },
       });
       sessions.set(interaction.guildId, bridge);
-      try { await entersState(connection, VoiceConnectionStatus.Ready, 20000); await bridge.start(); }
+      try {
+        await entersState(connection, VoiceConnectionStatus.Ready, 20000);
+        restoreListening(bridge, listeningStore, interaction.guildId, allowed);
+        await bridge.start();
+      }
       catch (error) { bridge.close(); throw error; }
-      await reply(interaction, `연결 완료: <#${channel.id}>. ${member.displayName}님의 음성은 ElevenLabs에서 인식하고, 대화문은 Strata에서 처리합니다. 답변 텍스트를 ElevenLabs로 보내 AI 목소리로 합성합니다.\n말을 마친 뒤 잠시 기다리세요. 다른 참가자: /ai listen enabled:True · 응답 중지: /ai stop · 종료: /ai leave`);
+      await reply(interaction, `연결 완료: <#${channel.id}>. ${member.displayName}님의 음성 수신: ${bridge.listeners.has(member.id) ? '켜짐' : '꺼짐'}. 수신 참여자의 음성은 ElevenLabs에서 인식하고, 대화문은 Strata에서 처리합니다. 답변 텍스트를 ElevenLabs로 보내 AI 목소리로 합성합니다.\n말을 마친 뒤 잠시 기다리세요. 다른 참가자: /ai listen enabled:True · 응답 중지: /ai stop · 종료: /ai leave`);
       return;
     }
 
@@ -84,8 +92,8 @@ client.on(Events.InteractionCreate, async interaction => {
     if (action === 'listen') {
       if (!session || !sameChannel(member, session)) throw new Error('봇과 같은 음성채널에 있어야 합니다.');
       const enabled = interaction.options.getBoolean('enabled', true);
-      session.setListening(member.id, enabled);
-      await reply(interaction, enabled ? '내 음성은 ElevenLabs에서 인식하고 대화문은 Strata로 전송합니다. 답변은 ElevenLabs가 합성하며 채널 참가자 모두에게 들립니다.' : '이제 내 목소리를 전송하지 않습니다. 이미 보낸 발화는 취소되지 않습니다.');
+      saveListening(session, listeningStore, interaction.guildId, member.id, enabled);
+      await reply(interaction, enabled ? '이 서버에서 내 음성 수신을 켜고 저장했습니다. 채널 재입장·봇 재연결 뒤에도 적용됩니다. 음성은 ElevenLabs에서 인식하고 대화문은 Strata로 전송합니다. 답변은 채널 참가자 모두에게 들립니다.' : '이 서버에서 내 음성 수신을 끄고 저장했습니다. 다시 켜기 전까지 채널 재입장·봇 재연결 뒤에도 꺼짐을 유지합니다. 이미 보낸 발화는 취소되지 않습니다.');
       return;
     }
     if (action === 'stop') {
@@ -149,10 +157,12 @@ client.on(Events.VoiceStateUpdate, (before, after) => {
   if (after.id === client.user?.id && after.channelId !== session.channel.id) {
     session.notify('봇의 음성채널이 변경되어 대화를 종료했습니다. /ai join으로 다시 시작하세요.'); session.close(); return;
   }
-  if (before.channelId === session.channel.id && after.channelId !== before.channelId) {
-    session.setListening(after.id, false);
+  if (before.channelId === after.channelId ||
+      (before.channelId !== session.channel.id && after.channelId !== session.channel.id)) return;
+  try {
+    restoreListening(session, listeningStore, before.guild.id, allowed, after.id);
     if (!session.channel.members.some(member => !member.user.bot)) session.close();
-  }
+  } catch (error) { session.fail(error); }
 });
 client.on(Events.Error, error => console.error('Discord 연결 오류:', error.message));
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {
