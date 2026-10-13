@@ -8,6 +8,7 @@ import { VoiceSession } from '../src/voice-session.js';
 import { VoiceMixer, FRAME_BYTES } from '../src/mixer.js';
 import { validateSettings, parseGuildIds, acceptsGuild } from '../src/config.js';
 import { registerGuild } from '../src/registration.js';
+import { submitAction } from '../src/actions.js';
 
 class MockApi extends EventEmitter {
   ready = false; generating = false; closed = false; frames = []; cleared = 0; requests = 0; stops = [];
@@ -213,6 +214,78 @@ test('real voice adapter waits for Discord playback before committing assistant 
     assert.equal(bridge.api.history.at(-1).content, 'Hello.');
     const second = once(bridge.api, 'done'); transcription.emit('transcript', 'Second question'); await second;
     assert.equal(messages[1][2].role, 'assistant'); assert.equal(messages[1][2].content, 'Hello.');
+  } finally { bridge.close(); }
+});
+
+function actionFixture() {
+  const f = fixture(); const messages = []; const spoken = [];
+  const transcription = new EventEmitter();
+  Object.assign(transcription, { async connect() {}, append() {}, clearInput() {}, close() {} });
+  f.bridge.apiFactory = options => new VoiceSession({ ...options, transcription,
+    llm: { async check() {}, async *stream(input) { messages.push(structuredClone(input)); yield '반가워요.'; } },
+    speech: { async *synthesize(text) { spoken.push(text); yield Buffer.alloc(9600); } },
+  });
+  return { ...f, transcription, messages, spoken };
+}
+
+test('an action after stop responds without enabling the microphone or admitting late voice commits', async () => {
+  const { bridge, messages, spoken } = actionFixture(); bridge.channel.id = 'voice';
+  try {
+    assert.throws(() => bridge.act('손을 흔든다', '민수'), /준비/);
+    await bridge.start(); bridge.stop();
+    const done = once(bridge.api, 'done');
+    submitAction({ id: '2', displayName: '민수', voice: { channelId: 'voice' } }, bridge, '손을 흔든다');
+    bridge.api.emit('committed');
+    await done;
+    assert.equal(messages.length, 1); assert.equal(bridge.pendingTurn, false);
+    assert.match(messages[0].at(-1).content, /손을 흔든다/);
+    assert.deepEqual(spoken, ['반가워요.']);
+    assert.equal(bridge.ignoreCommit, true); assert.equal(bridge.listeners.has('2'), false);
+    bridge.changing = true;
+    assert.throws(() => bridge.act('행동', '민수'), /준비/);
+  } finally { bridge.close(); }
+  assert.throws(() => bridge.act('행동', '민수'), /준비/);
+});
+
+test('actions wait for current generation and playback, then see the completed assistant reply', async () => {
+  const { bridge, player, messages } = actionFixture();
+  try {
+    await bridge.start();
+    const first = once(bridge.api, 'done'); bridge.act('첫 행동', '민수');
+    bridge.act('다음 행동', '지수');
+    assert.equal(messages.length, 1);
+    await first;
+    assert.equal(player.state.status, 'playing'); assert.equal(messages.length, 1);
+    const second = once(bridge.api, 'done');
+    player.state = { status: 'idle' }; player.emit('idle'); await second;
+    assert.equal(messages.length, 2);
+    assert.equal(messages[1][2].role, 'assistant'); assert.equal(messages[1][2].content, '반가워요.');
+    assert.match(messages[1].at(-1).content, /다음 행동/);
+    assert.match(messages[1].at(-1).content, /지수/);
+  } finally { bridge.close(); }
+});
+
+test('actions resume when speech stops even if it produces no transcript', async () => {
+  const { bridge, transcription, messages } = actionFixture();
+  try {
+    await bridge.start(); transcription.emit('speechStart');
+    bridge.act('손을 흔든다', '민수'); assert.equal(messages.length, 0);
+    const done = once(bridge.api, 'done'); transcription.emit('speechStop'); await done;
+    assert.equal(messages.length, 1);
+  } finally { bridge.close(); }
+});
+
+test('stop cancels queued actions without a later reply', async () => {
+  const { bridge, player, messages } = actionFixture();
+  try {
+    await bridge.start();
+    const done = once(bridge.api, 'done'); bridge.act('첫 행동', '민수'); await done;
+    bridge.act('취소할 행동', '민수');
+    bridge.stop();
+    await new Promise(resolve => setImmediate(resolve));
+    player.emit('idle');
+    assert.equal(messages.length, 1); assert.deepEqual(bridge.api.pending, []);
+    assert.equal(bridge.pendingTurn, false);
   } finally { bridge.close(); }
 });
 

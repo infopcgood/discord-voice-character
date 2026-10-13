@@ -64,7 +64,12 @@ export class Bridge {
       this.speech = true; this.ignoreCommit = false; this.lastActivity = Date.now();
       if (this.settings.interrupt && this.responding) this.interruptOutput();
     });
-    api.on('speechStop', () => { if (current()) this.speech = false; });
+    api.on('speechStop', () => {
+      if (!current()) return;
+      this.speech = false;
+      // A typed action can be pending even when VAD yields no transcript.
+      this.maybeRespond();
+    });
     api.on('committed', () => {
       if (!current() || this.ignoreCommit) return;
       this.pendingTurn = true; this.lastActivity = Date.now(); this.maybeRespond();
@@ -116,6 +121,13 @@ export class Bridge {
       clearTimeout(this.responseTimer);
       this.responseTimer = setTimeout(() => this.fail(new Error('AI 응답 시간이 초과되었습니다.')), this.services.responseTimeoutMs);
     } catch (error) { this.fail(error); }
+  }
+  act(text, actor) {
+    if (this.closed || this.changing || !this.api?.ready) throw new Error('음성 연결이 아직 준비되지 않았습니다. 잠시 후 다시 시도하세요.');
+    this.api.queueAction(text, actor);
+    this.pendingTurn = true; this.lastActivity = Date.now();
+    // Keep the stop fence for late voice commits; text input bypasses it explicitly.
+    this.maybeRespond();
   }
   setListening(id, enabled) {
     if (enabled) { this.listeners.add(id); this.capture(id); }

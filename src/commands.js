@@ -1,5 +1,6 @@
 import { SlashCommandBuilder } from 'discord.js';
 import { voices } from './config.js';
+import { MAX_ACTION_LENGTH } from './actions.js';
 
 const command = new SlashCommandBuilder().setName('ai').setDescription('음성 캐릭터와 대화합니다').setDMPermission(false);
 for (const [name, description] of Object.entries({
@@ -11,6 +12,8 @@ for (const [name, description] of Object.entries({
   reset: '대화 기억을 지우고 다시 시작합니다',
   status: '현재 설정과 연결 상태를 확인합니다',
 })) command.addSubcommand(s => s.setName(name).setDescription(description));
+command.addSubcommand(s => s.setName('act').setDescription('캐릭터에게 대사가 아닌 행동을 전달합니다')
+  .addStringOption(o => o.setName('text').setDescription('예: 손을 흔들며 웃는다').setRequired(true).setMinLength(1).setMaxLength(MAX_ACTION_LENGTH)));
 command.addSubcommand(s => s.setName('voice').setDescription('목소리를 선택합니다 (대화 기억 초기화)')
   .addStringOption(o => o.setName('name').setDescription('목소리').setRequired(true).addChoices(...voices.map(name => ({ name, value: name })))));
 command.addSubcommand(s => s.setName('volume').setDescription('AI 목소리의 볼륨을 바꿉니다')

@@ -52,7 +52,10 @@ test('settings persist per guild and reject unsafe paths or invalid values', () 
 });
 test('all requested slash controls serialize successfully', () => {
   const names = commands[0].options.map(x => x.name);
-  for (const name of ['join', 'leave', 'persona', 'voice', 'volume', 'speed', 'listen', 'stop', 'reset', 'silence', 'overlap', 'interrupt', 'model', 'sensitivity']) assert.ok(names.includes(name));
+  for (const name of ['join', 'leave', 'act', 'persona', 'voice', 'volume', 'speed', 'listen', 'stop', 'reset', 'silence', 'overlap', 'interrupt', 'model', 'sensitivity']) assert.ok(names.includes(name));
+  const text = commands[0].options.find(x => x.name === 'act').options[0];
+  assert.equal(text.name, 'text'); assert.equal(text.required, true);
+  assert.equal(text.min_length, 1); assert.equal(text.max_length, 2000);
 });
 
 test('v2 speech models migrate once; v3 server-specific Strata models survive default changes', () => {

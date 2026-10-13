@@ -6,6 +6,7 @@ import { SettingsStore, requireEnv, allowed, root, acceptsGuild, validateSetting
 import { Bridge } from './bridge.js';
 import { registerGuild } from './registration.js';
 import { requireServices } from './services.js';
+import { submitAction } from './actions.js';
 
 requireEnv(['DISCORD_TOKEN']);
 const services = requireServices();
@@ -75,6 +76,11 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
 
+    if (action === 'act') {
+      submitAction(member, session, interaction.options.getString('text', true));
+      await reply(interaction, '행동을 전달했습니다. 캐릭터가 대화 순서에 따라 음성으로 반응합니다.');
+      return;
+    }
     if (action === 'listen') {
       if (!session || !sameChannel(member, session)) throw new Error('봇과 같은 음성채널에 있어야 합니다.');
       const enabled = interaction.options.getBoolean('enabled', true);
