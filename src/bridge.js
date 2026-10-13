@@ -8,7 +8,7 @@ import { VoiceMixer, FRAME_BYTES } from './mixer.js';
 import { idleMinutes, validateSettings } from './config.js';
 
 export class Bridge {
-  constructor({ connection, channel, owner, settings, notify, onClose, apiFactory = options => new VoiceSession(options), player = createAudioPlayer() }) {
+  constructor({ connection, channel, owner, settings, notify, onClose, apiFactory = options => new VoiceSession(options), player = createAudioPlayer({ behaviors: { maxMissedFrames: 250 } }) }) {
     Object.assign(this, { connection, channel, owner, notify, onClose, apiFactory, player });
     this.settings = validateSettings(settings);
     this.services = serviceConfig();
@@ -85,6 +85,12 @@ export class Bridge {
         this.output = new PassThrough(); this.converter = new DiscordPCM();
         this.output.on('error', error => this.fail(error)); this.converter.on('error', error => this.fail(error));
         this.resource = createAudioResource(this.output.pipe(this.converter), { inputType: StreamType.Raw, inlineVolume: true });
+        const resource = this.resource;
+        resource.playStream.once('end', () => {
+          const state = this.player.state;
+          // Empty reads can be brief during streamed TTS; a real end is definitive.
+          if (state.status !== AudioPlayerStatus.Idle && state.resource === resource) this.player.stop(true);
+        });
         this.resource.volume.setVolume(this.settings.volume); this.player.play(this.resource);
       }
       if (this.output.writableLength > 4 * 1024 * 1024) { this.fail(new Error('음성 응답 버퍼가 너무 큽니다.')); return; }
