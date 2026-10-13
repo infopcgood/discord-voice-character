@@ -139,6 +139,73 @@ test('history budget drops old turns and never truncates the character prompt or
   assert.throws(() => f.session.messages('z'.repeat(50)), /HISTORY_MAX_CHARS/); f.session.close();
 });
 
+test('short conversations keep the same request prefix beyond twenty exchanges', async () => {
+  const f = fixture(); await f.session.connect();
+  try {
+    for (let i = 0; i < 30; i++) {
+      const input = `Question ${i}`;
+      await reply(f, input); f.session.playbackFinished();
+      const messages = f.calls[i];
+      assert.equal(messages.filter(message => message.role === 'system').length, 1);
+      assert.equal(messages.filter(message => message.content === input).length, 1);
+      if (i) assert.deepEqual(messages.slice(0, f.calls[i - 1].length), f.calls[i - 1]);
+    }
+    assert.equal(f.session.history.length, 60);
+  } finally { f.session.close(); }
+});
+
+test('history at the character limit is retained, then trimmed in a batch with room for follow-up turns', () => {
+  const f = fixture({ services: { ...serviceConfig(), historyChars: 1000 }, settings: { persona: 'persona' } });
+  const size = messages => messages.reduce((sum, message) => sum + message.content.length, 0);
+  const history = Array.from({ length: 12 }, (_, i) => [
+    { role: 'user', content: `User ${i}`.padEnd(40, '.') },
+    { role: 'assistant', content: `Reply ${i}`.padEnd(40, '.') },
+  ]).flat();
+  f.session.history = [...history];
+  try {
+    const atLimit = f.session.messages('x'.repeat(33));
+    assert.equal(size(atLimit), 1000);
+    assert.deepEqual(atLimit.slice(1, -1), history);
+    f.session.history.push({ role: 'assistant', content: 'Answer.' });
+    const beforeTrim = [...f.session.history];
+    const trimmed = f.session.messages('Next?');
+    assert.ok(size(trimmed) <= 750);
+    assert.equal(trimmed[0].content, 'persona');
+    assert.equal(trimmed[1].role, 'user');
+    assert.deepEqual(trimmed.at(-1), { role: 'user', content: 'Next?' });
+    const retained = trimmed.slice(1, -1);
+    assert.ok(retained.length > 0);
+    assert.deepEqual(retained, beforeTrim.slice(-retained.length));
+    assert.ok(beforeTrim.length - retained.length > 2);
+    let previous = trimmed;
+    for (let i = 0; i < 3; i++) {
+      f.session.history.push({ role: 'assistant', content: 'Answer.' });
+      const next = f.session.messages(`Follow-up ${i}`);
+      assert.deepEqual(next.slice(0, previous.length), previous);
+      assert.ok(size(next) <= 1000);
+      previous = next;
+    }
+  } finally { f.session.close(); }
+});
+
+test('large required input survives batch trimming and invalid input leaves history unchanged', () => {
+  const f = fixture({ services: { ...serviceConfig(), historyChars: 1000 }, settings: { persona: 'p'.repeat(800) } });
+  f.session.history = [
+    { role: 'user', content: 'old'.repeat(20) },
+    { role: 'assistant', content: 'reply'.repeat(20) },
+  ];
+  try {
+    const input = 'u'.repeat(200);
+    assert.deepEqual(f.session.messages(input), [
+      { role: 'system', content: f.session.settings.persona },
+      { role: 'user', content: input },
+    ]);
+    const previous = structuredClone(f.session.history);
+    assert.throws(() => f.session.messages('u'.repeat(201)), /HISTORY_MAX_CHARS/);
+    assert.deepEqual(f.session.history, previous);
+  } finally { f.session.close(); }
+});
+
 test('two guild sessions have independent history, cancellation, queues, and lifecycle', async () => {
   const a = fixture(); const b = fixture(); await a.session.connect(); await b.session.connect();
   try {
