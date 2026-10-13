@@ -69,6 +69,20 @@ test('mixer carries incomplete frames, bounds backlog and purges users', () => {
   assert.equal(mixer.tick().pcm.readInt16LE(0), 2000);
   mixer.remove('a'); assert.equal(mixer.tick().active, false);
 });
+test('natural playback completion releases ended streams without destroying them', async () => {
+  const { bridge, api, player } = fixture();
+  try {
+    await bridge.start();
+    const output = new PassThrough(); const converter = new PassThrough();
+    output.end(); converter.end();
+    bridge.output = output; bridge.converter = converter; bridge.resource = {};
+    bridge.pendingTurn = true;
+    player.state = { status: 'idle' }; player.emit('idle');
+    assert.equal(output.destroyed, false); assert.equal(converter.destroyed, false);
+    assert.equal(bridge.output, null); assert.equal(bridge.converter, null);
+    assert.equal(api.requests, 1);
+  } finally { bridge.close(); }
+});
 test('opt-in streams decode actual Opus and remain subscribed during playback', async () => {
   const { bridge, api, sources } = fixture();
   try {

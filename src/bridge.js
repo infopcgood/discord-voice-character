@@ -17,7 +17,12 @@ export class Bridge {
     this.connection.subscribe(this.player);
     this.player.on('error', () => this.fail(new Error('음성 재생 실패. Opus 라이브러리를 확인하세요.')));
     this.player.on(AudioPlayerStatus.Idle, () => {
-      if (!this.clearingPlayback) { this.api?.playbackFinished?.(); this.maybeRespond(); }
+      if (!this.clearingPlayback) {
+        this.api?.playbackFinished?.();
+        // audioEnd already called end(); let the encoder pipeline finish its close sequence.
+        if (this.output?.writableEnded) this.releasePlayback();
+        this.maybeRespond();
+      }
     });
     this.lastActivity = Date.now(); this.closed = false; this.changing = false;
     this.speech = false; this.pendingTurn = false; this.ignoreCommit = false;
@@ -183,6 +188,9 @@ export class Bridge {
     const next = validateSettings(settings);
     await this.api.updateListening(next);
     this.settings = next; this.mixer.overlap = next.overlap;
+  }
+  releasePlayback() {
+    this.output = null; this.converter = null; this.resource = null;
   }
   clearPlayback() {
     this.clearingPlayback = true;
