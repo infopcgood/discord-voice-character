@@ -23,7 +23,7 @@ class MockApi extends EventEmitter {
 }
 class MockPlayer extends EventEmitter {
   state = { status: 'idle' };
-  play(resource) { this.resource = resource; this.state = { status: 'playing' }; }
+  play(resource) { this.resource = resource; this.state = { status: 'playing', resource }; }
   stop() { const active = this.state.status !== 'idle'; this.state = { status: 'idle' }; if (active) this.emit('idle'); }
 }
 function fixture(overrides = {}) {
@@ -95,6 +95,16 @@ test('opt-in streams decode actual Opus and remain subscribed during playback', 
     assert.equal(api.frames.at(-1).length, FRAME_BYTES);
     bridge.setListening('2', false);
     assert.equal(sources.get('2').destroyed, true); assert.equal(bridge.mixer.tracks.has('2'), false);
+  } finally { bridge.close(); }
+});
+test('a completed encoder stream ends playback immediately', async () => {
+  const { bridge, api, player } = fixture();
+  try {
+    await bridge.start(); api.emit('audio', Buffer.alloc(9600));
+    const resource = player.resource;
+    assert.ok(resource);
+    resource.playStream.emit('end');
+    assert.equal(player.state.status, 'idle');
   } finally { bridge.close(); }
 });
 test('a malformed Opus packet resets only that participant decoder', async () => {
