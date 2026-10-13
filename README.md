@@ -110,7 +110,7 @@ Discord 음성을 24 kHz 모노 PCM16으로 받아 OpenAI **transcription 전용
 | 설정 | 기본값 / 의미 |
 | --- | --- |
 | `OPENAI_TRANSCRIBE_LANGUAGE` | 빈 값: 자동 인식, `ko`: 한국어 힌트 |
-| `STRATA_MAX_TOKENS` | 512: 한 답변의 출력 토큰 한도 |
+| `STRATA_MAX_TOKENS` | 128000: 한 답변의 최대 출력 토큰 수 (Strata 모델이 지원하는 한도에 따름) |
 | `STRATA_TIMEOUT_MS` | 60000: 추론 대기열과 응답 스트림 시간 한도 |
 | `RESPONSE_TIMEOUT_MS` | 180000: 합성을 포함한 전체 응답 시간 한도 |
 | `HISTORY_MAX_CHARS` | 24000: 프롬프트와 최근 대화의 문자 예산 |
