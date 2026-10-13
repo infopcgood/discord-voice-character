@@ -1,5 +1,5 @@
 // The only Strata-specific contract: OpenAI-compatible POST /chat/completions.
-// No OpenAI credentials, audio, cloud fallback, tools, or reasoning fields go here.
+// No OpenAI credentials, audio, cloud fallback, tools, or reasoning output go here.
 export class RequestGate {
   constructor(limit = 1) { this.limit = limit; this.active = 0; this.waiters = []; }
   async acquire(signal) {
@@ -65,7 +65,8 @@ export class StrataClient {
     const response = await this.fetchImpl(`${this.baseURL}/chat/completions`, {
       method: 'POST', redirect: 'error', signal,
       headers: { 'Content-Type': 'application/json', ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}) },
-      body: JSON.stringify({ model: this.model, messages, stream, max_tokens: maxTokens }),
+      // Strata's documented no-thinking mode applies to both replies and probes.
+      body: JSON.stringify({ model: this.model, messages, stream, max_tokens: maxTokens, reasoning_effort: 'none' }),
     });
     if (!response.ok) { await response.body?.cancel(); throw new Error(`Strata HTTP ${response.status}: API 주소, 모델 ID, 인증, 서버 로그를 확인하세요.`); }
     return response;
@@ -113,3 +114,4 @@ export class StrataClient {
     } finally { release(); }
   }
 }
+

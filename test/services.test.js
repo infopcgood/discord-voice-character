@@ -26,7 +26,7 @@ test('configuration requires explicit local endpoint/model and independent cloud
   assert.throws(() => serviceConfig({ ELEVENLABS_STT_MODEL: 'scribe_v1' }), /scribe_v2_realtime/);
 });
 
-test('real HTTP chat probe and fragmented Korean SSE use only Strata credentials', async t => {
+test('real HTTP chat probe and fragmented Korean SSE disable thinking and use only Strata credentials', async t => {
   const received = [];
   const server = createServer(async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk;
@@ -46,7 +46,10 @@ test('real HTTP chat probe and fragmented Korean SSE use only Strata credentials
   assert.deepEqual(received[1].data.messages, messages);
   assert.equal(received[1].data.model, 'org/model');
   assert.equal(received[1].data.stream, true);
-  for (const request of received) { assert.equal(request.url, '/v1/chat/completions'); assert.equal(request.auth, 'Bearer local-only'); }
+  for (const request of received) {
+    assert.equal(request.url, '/v1/chat/completions'); assert.equal(request.auth, 'Bearer local-only');
+    assert.equal(request.data.reasoning_effort, 'none');
+  }
 });
 
 test('SSE parser handles individual UTF-8 bytes and split CRLF, comments and multiline data', async () => {
