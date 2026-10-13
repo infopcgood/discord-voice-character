@@ -95,13 +95,54 @@ export class Bridge {
     if (this.closed || this.inputs.has(userId) || !this.listeners.has(userId) || !member || member.user.bot) return;
     // Persistent receive subscriptions preserve the beginning of overlapping speech.
     const source = this.connection.receiver.subscribe(userId, { end: { behavior: EndBehaviorType.Manual } });
-    const decoder = new prism.opus.Decoder({ rate: 24000, channels: 1, frameSize: 480 });
-    const state = { source, decoder }; this.inputs.set(userId, state);
-    decoder.on('data', pcm => { if (!this.closed && !this.changing && this.listeners.has(userId)) this.mixer.push(userId, pcm); });
-    const failure = () => this.fail(new Error('수신 음성 해독에 실패했습니다. 의존성과 DAVE 지원을 확인하세요.'));
-    source.on('error', failure); decoder.on('error', failure);
+    const state = { source, decoder: null, decodeErrorWindow: 0, decodeErrors: 0 };
+    this.inputs.set(userId, state);
+    const decoder = this.createInputDecoder(userId, state);
+    source.on('error', error => {
+      console.error('[voice receive source]', error);
+      if (this.inputs.get(userId) === state) this.fail(new Error('디스코드 음성 수신 스트림 오류'));
+    });
     source.once('end', () => { if (this.inputs.get(userId) === state) this.removeInput(userId); });
     source.pipe(decoder);
+  }
+  createInputDecoder(userId, state) {
+    const decoder = new prism.opus.Decoder({ rate: 24000, channels: 1, frameSize: 480 });
+    state.decoder = decoder;
+    decoder.on('data', pcm => {
+      if (!this.closed && !this.changing && this.listeners.has(userId)) this.mixer.push(userId, pcm);
+    });
+    decoder.on('error', error => this.recoverInputDecoder(userId, state, decoder, error));
+    return decoder;
+  }
+  recoverInputDecoder(userId, state, decoder, error) {
+    if (this.closed || this.inputs.get(userId) !== state || state.decoder !== decoder) return;
+    state.source.unpipe(decoder);
+    const now = Date.now();
+    if (!state.decodeErrorWindow || now - state.decodeErrorWindow > 10000) {
+      state.decodeErrorWindow = now;
+      state.decodeErrors = 0;
+    }
+    state.decodeErrors++;
+    console.warn(`Opus decode failed for voice participant ${userId}; resetting their decoder: ${error.message}`);
+    if (state.decodeErrors >= 5) {
+      console.error(`Pausing voice input for participant ${userId} after repeated invalid Opus packets.`);
+      this.removeInput(userId);
+      this.notify('한 참가자의 음성 패킷 오류가 반복되어 해당 참가자의 수신을 잠시 중지했습니다. 다음 발화 때 다시 연결됩니다.');
+      return;
+    }
+    let replacement;
+    try { replacement = this.createInputDecoder(userId, state); }
+    catch (restartError) {
+      console.error('Could not restart Opus decoder:', restartError);
+      this.removeInput(userId);
+      return;
+    }
+    // Let the failed pipe's error handler finish unpiping before attaching its replacement.
+    queueMicrotask(() => {
+      if (!this.closed && this.inputs.get(userId) === state && state.decoder === replacement && !replacement.destroyed) {
+        state.source.pipe(replacement);
+      }
+    });
   }
   tick() {
     if (this.closed || this.changing || !this.api?.ready) return;
