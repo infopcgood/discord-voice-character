@@ -1,7 +1,8 @@
 import { SlashCommandBuilder } from 'discord.js';
 import { MAX_ACTION_LENGTH } from './actions.js';
+import { MAX_CHAT_LENGTH } from './text-chat.js';
 
-const command = new SlashCommandBuilder().setName('ai').setDescription('음성 캐릭터와 대화합니다').setDMPermission(false);
+const command = new SlashCommandBuilder().setName('ai').setDescription('음성 또는 텍스트로 캐릭터와 대화합니다').setDMPermission(false);
 for (const [name, description] of Object.entries({
   join: '내 음성채널에 입장합니다 (ElevenLabs 음성 + Strata 대화)',
   leave: '음성채널에서 퇴장합니다',
@@ -11,8 +12,13 @@ for (const [name, description] of Object.entries({
   reset: '대화 기억을 지우고 다시 시작합니다',
   status: '현재 설정과 연결 상태를 확인합니다',
 })) command.addSubcommand(s => s.setName(name).setDescription(description));
+command.addSubcommand(s => s.setName('chat').setDescription('이 채널에서 텍스트 대화를 합니다 (공개 범위: /ai visibility)')
+  .addStringOption(o => o.setName('text').setDescription('캐릭터에게 할 말').setRequired(true).setMinLength(1).setMaxLength(MAX_CHAT_LENGTH)));
 command.addSubcommand(s => s.setName('act').setDescription('캐릭터에게 대사가 아닌 행동을 전달합니다')
-  .addStringOption(o => o.setName('text').setDescription('예: 손을 흔들며 웃는다').setRequired(true).setMinLength(1).setMaxLength(MAX_ACTION_LENGTH)));
+  .addStringOption(o => o.setName('text').setDescription('예: 손을 흔들며 웃는다 (공개 범위: /ai visibility)').setRequired(true).setMinLength(1).setMaxLength(MAX_ACTION_LENGTH)));
+command.addSubcommand(s => s.setName('visibility').setDescription('이 서버의 /ai chat·act 텍스트 공개 범위를 저장합니다 (텍스트 기억 초기화)')
+  .addStringOption(o => o.setName('mode').setDescription('private도 음성 답변은 음성채널 전체에 들립니다').setRequired(true)
+    .addChoices({ name: 'public · 채널에 공개', value: 'public' }, { name: 'private · 작성자에게만 표시', value: 'private' })));
 command.addSubcommand(s => s.setName('voice').setDescription('목소리를 선택합니다 (대화 기억 초기화)')
   .addStringOption(o => o.setName('name').setDescription('ElevenLabs Voice ID 또는 default (.env 기본값)').setRequired(true).setMaxLength(128)));
 command.addSubcommand(s => s.setName('volume').setDescription('AI 목소리의 볼륨을 바꿉니다')
