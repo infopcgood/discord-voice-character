@@ -62,11 +62,19 @@ export class VoiceSession extends EventEmitter {
   messages(user) {
     const system = { role: 'system', content: this.settings.persona };
     const current = { role: 'user', content: user };
-    const size = messages => messages.reduce((sum, message) => sum + message.content.length, 0);
-    if (size([system, current]) > this.services.historyChars) throw new Error('프롬프트와 현재 발화가 HISTORY_MAX_CHARS 한도를 넘습니다.');
-    while (this.history.length && (size([system, ...this.history, current]) > this.services.historyChars || this.history.length >= 40)) {
-      this.history.shift();
-      while (this.history[0]?.role === 'assistant') this.history.shift();
+    const requiredChars = system.content.length + current.content.length;
+    const limit = this.services.historyChars;
+    if (requiredChars > limit) throw new Error('프롬프트와 현재 발화가 HISTORY_MAX_CHARS 한도를 넘습니다.');
+    let chars = requiredChars + this.history.reduce((sum, message) => sum + message.content.length, 0);
+    if (chars > limit) {
+      // Dropping the oldest turn changes the prompt prefix and invalidates its
+      // cached state. Trim in batches so subsequent turns can reuse it again.
+      const target = Math.max(requiredChars, Math.floor(limit * 0.75));
+      let removed = 0;
+      while (removed < this.history.length && (chars > target || this.history[removed].role === 'assistant')) {
+        chars -= this.history[removed++].content.length;
+      }
+      this.history = this.history.slice(removed);
     }
     this.history.push(current);
     return [system, ...this.history];
