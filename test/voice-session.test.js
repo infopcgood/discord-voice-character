@@ -15,8 +15,8 @@ class Recognition extends EventEmitter {
 function fixture(overrides = {}) {
   const transcription = new Recognition(); const calls = []; const said = [];
   const llm = { async check() {}, async *stream(messages) { calls.push(structuredClone(messages)); yield 'First. '; yield 'Second.'; } };
-  const speech = { async *synthesize(text) { said.push(text); yield Buffer.alloc(48000); } };
-  const settings = { persona: 'Speak Korean as a librarian.', voice: 'marin', speed: 1 };
+  const speech = { async synthesize(text) { said.push(text); return Buffer.alloc(48000); } };
+  const settings = { persona: 'Speak Korean as a librarian.', voice: 'default', speed: 1 };
   const session = new VoiceSession({ settings, services: serviceConfig(), transcription, llm, speech, ...overrides });
   return { session, transcription, calls, said };
 }
@@ -32,7 +32,7 @@ test('speech chunks are bounded, sentence-aware, and preserve split surrogate pa
   const chunk = takeSpeechChunk(text); assert.equal(chunk.text.length, 399); assert.ok(chunk.rest.startsWith('😀'));
 });
 
-test('recognized text and persona go to Strata, speech is streamed, history commits after playback', async () => {
+test('recognized text and persona go to Strata, complete speech segments are emitted, history commits after playback', async () => {
   const f = fixture(); await f.session.connect();
   try {
     let bytes = 0; f.session.on('audio', pcm => { bytes += pcm.length; });
@@ -110,12 +110,12 @@ test('cancellation before first output ignores a late generation and permits a n
 
 test('cancelling active TTS aborts its signal and blocks late PCM', async () => {
   let release; const hold = new Promise(resolve => { release = resolve; }); let signal;
-  const f = fixture({ speech: { async *synthesize(_text, _settings, current) { signal = current; yield Buffer.alloc(960); await hold; yield Buffer.alloc(48000); } } });
+  const f = fixture({ speech: { async synthesize(_text, _settings, current) { signal = current; await hold; return Buffer.alloc(48000); } } });
   await f.session.connect(); let bytes = 0; f.session.on('audio', pcm => { bytes += pcm.length; });
   try {
-    f.transcription.emit('transcript', 'Hello'); const audio = once(f.session, 'audio'); f.session.respond(); await audio;
+    f.transcription.emit('transcript', 'Hello'); f.session.respond(); await new Promise(resolve => setImmediate(resolve));
     f.session.stop(10); release(); await new Promise(resolve => setImmediate(resolve));
-    assert.equal(signal.aborted, true); assert.equal(bytes, 960);
+    assert.equal(signal.aborted, true); assert.equal(bytes, 0);
     assert.equal(f.session.history.filter(message => message.role === 'assistant').length, 0);
   } finally { f.session.close(); }
 });
@@ -158,3 +158,4 @@ test('unavailable local model fails before opening speech; generation errors are
     assert.match((await fault)[0].message, /inference failed/); assert.equal(b.session.generating, false);
   } finally { b.session.close(); }
 });
+

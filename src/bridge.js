@@ -1,28 +1,34 @@
-import { PassThrough } from 'node:stream';
 import prism from 'prism-media';
 import { AudioPlayerStatus, createAudioPlayer, createAudioResource, EndBehaviorType, StreamType, VoiceConnectionStatus } from '@discordjs/voice';
 import { VoiceSession } from './voice-session.js';
 import { serviceConfig } from './services.js';
-import { DiscordPCM } from './audio.js';
+import { SpeechPackets } from './playback.js';
 import { VoiceMixer, FRAME_BYTES } from './mixer.js';
 import { idleMinutes, validateSettings } from './config.js';
 
 export class Bridge {
-  constructor({ connection, channel, owner, settings, notify, onClose, apiFactory = options => new VoiceSession(options), player = createAudioPlayer({ behaviors: { maxMissedFrames: 250 } }) }) {
+  constructor({ connection, channel, owner, settings, notify, onClose, apiFactory = options => new VoiceSession(options), player = createAudioPlayer() }) {
     Object.assign(this, { connection, channel, owner, notify, onClose, apiFactory, player });
     this.settings = validateSettings(settings);
     this.services = serviceConfig();
     this.listeners = new Set([owner]); this.inputs = new Map();
     this.mixer = new VoiceMixer({ overlap: this.settings.overlap });
     this.connection.subscribe(this.player);
-    this.player.on('error', () => this.fail(new Error('음성 재생 실패. Opus 라이브러리를 확인하세요.')));
+    this.audioQueue = []; this.queuedBytes = 0; this.playedMs = 0; this.playbackEnded = false;
+    this.player.on('error', error => {
+      if (error.resource && error.resource !== this.resource) return;
+      console.error('[voice playback]', error);
+      this.fail(new Error(`음성 재생 실패: ${error.message}`));
+    });
     this.player.on(AudioPlayerStatus.Idle, () => {
-      if (!this.clearingPlayback) {
-        this.api?.playbackFinished?.();
-        // audioEnd already called end(); let the encoder pipeline finish its close sequence.
-        if (this.output?.writableEnded) this.releasePlayback();
-        this.maybeRespond();
+      if (this.clearingPlayback || this.closed) return;
+      if (this.resource) {
+        this.playedMs += this.resource.metadata.durationMs;
+        this.queuedBytes -= this.resource.metadata.bytes;
+        this.resource = null; this.playbackSource = null;
       }
+      try { this.playNext(); } catch (error) { this.fail(error); }
+      this.finishPlayback(); this.maybeRespond();
     });
     this.lastActivity = Date.now(); this.closed = false; this.changing = false;
     this.speech = false; this.pendingTurn = false; this.ignoreCommit = false;
@@ -45,7 +51,7 @@ export class Bridge {
     if (this.closed) throw new Error('연결이 종료되었습니다.');
     const next = validateSettings(settings);
     this.changing = true;
-    const api = this.apiFactory({ key: process.env.OPENAI_API_KEY, model: next.model, settings: next, services: this.services });
+    const api = this.apiFactory({ key: process.env.ELEVENLABS_API_KEY, model: next.model, settings: next, services: this.services });
     // Validate a replacement connection before retiring the old session.
     api.on('fault', error => { if (this.api === api) this.fail(error); });
     try {
@@ -81,25 +87,15 @@ export class Bridge {
     });
     api.on('audio', pcm => {
       if (!current()) return;
-      if (!this.output) {
-        this.output = new PassThrough(); this.converter = new DiscordPCM();
-        this.output.on('error', error => this.fail(error)); this.converter.on('error', error => this.fail(error));
-        this.resource = createAudioResource(this.output.pipe(this.converter), { inputType: StreamType.Raw, inlineVolume: true });
-        const resource = this.resource;
-        resource.playStream.once('end', () => {
-          const state = this.player.state;
-          // Empty reads can be brief during streamed TTS; a real end is definitive.
-          if (state.status !== AudioPlayerStatus.Idle && state.resource === resource) this.player.stop(true);
-        });
-        this.resource.volume.setVolume(this.settings.volume); this.player.play(this.resource);
-      }
-      if (this.output.writableLength > 4 * 1024 * 1024) { this.fail(new Error('음성 응답 버퍼가 너무 큽니다.')); return; }
-      if (!this.output.writableEnded) this.output.write(pcm);
+      try {
+        if (this.queuedBytes + pcm.length > 8 * 1024 * 1024) throw new Error('음성 응답 버퍼가 너무 큽니다.');
+        this.audioQueue.push(pcm); this.queuedBytes += pcm.length; this.playNext();
+      } catch (error) { this.fail(error); }
     });
-    api.on('audioEnd', () => { if (current()) this.output?.end(); });
+    api.on('audioEnd', () => { if (current()) { this.playbackEnded = true; this.finishPlayback(); } });
     api.on('done', () => { if (current()) { clearTimeout(this.responseTimer); this.maybeRespond(); } });
   }
-  get responding() { return Boolean(this.api?.generating || this.player.state.status !== AudioPlayerStatus.Idle); }
+  get responding() { return Boolean(this.api?.generating || this.resource || this.audioQueue.length || this.player.state.status !== AudioPlayerStatus.Idle); }
   get busy() { return this.changing || this.speech || this.pendingTurn || this.responding; }
   capture(userId) {
     const member = this.channel.members.get(userId);
@@ -195,18 +191,30 @@ export class Bridge {
     await this.api.updateListening(next);
     this.settings = next; this.mixer.overlap = next.overlap;
   }
-  releasePlayback() {
-    this.output = null; this.converter = null; this.resource = null;
+  playNext() {
+    if (this.closed || this.resource || !this.audioQueue.length) return;
+    const pcm = this.audioQueue.shift();
+    const source = new SpeechPackets(pcm, this.settings.volume);
+    this.playbackSource = source;
+    this.resource = createAudioResource(source, { inputType: StreamType.Opus,
+      metadata: { durationMs: pcm.length / 48, bytes: pcm.length }, silencePaddingFrames: 5 });
+    this.player.play(this.resource);
+  }
+  finishPlayback() {
+    if (!this.playbackEnded || this.resource || this.audioQueue.length) return;
+    this.playbackEnded = false; this.api?.playbackFinished?.();
   }
   clearPlayback() {
     this.clearingPlayback = true;
-    try {
-      this.player.stop(true); this.output?.destroy(); this.converter?.destroy();
-      this.output = null; this.converter = null; this.resource = null;
-    } finally { this.clearingPlayback = false; }
+    const source = this.playbackSource;
+    this.audioQueue = []; this.queuedBytes = 0; this.playedMs = 0; this.playbackEnded = false;
+    this.resource = null; this.playbackSource = null;
+    try { this.player.stop(true); source?.destroy(); }
+    finally { this.clearingPlayback = false; }
   }
   interruptOutput() {
-    this.api?.stop(Math.max(0, (this.resource?.playbackDuration || 0) - 100));
+    const currentMs = Math.min(this.resource?.playbackDuration || 0, this.resource?.metadata.durationMs || 0);
+    this.api?.stop(this.playedMs + Math.max(0, currentMs - 100));
     this.clearPlayback();
     // The backend cancels generation; preserve the new user audio.
   }
@@ -214,7 +222,7 @@ export class Bridge {
     this.pendingTurn = false; this.speech = false; this.ignoreCommit = true;
     this.mixer.reset(); this.api?.clearInput(); this.interruptOutput();
   }
-  setVolume(volume) { this.settings.volume = volume; this.resource?.volume?.setVolume(volume); }
+  setVolume(volume) { this.settings.volume = volume; this.playbackSource?.setVolume(volume); }
   fail(error) {
     if (this.closed) return;
     console.error(error.message); this.notify(`연결을 종료했습니다: ${error.message}`); this.close();
@@ -230,5 +238,6 @@ export class Bridge {
     this.onClose(this);
   }
 }
+
 
 

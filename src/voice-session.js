@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { Transcription } from './transcription.js';
 import { StrataClient } from './llm.js';
-import { OpenAISpeech } from './speech.js';
+import { ElevenLabsSpeech } from './speech.js';
 import { serviceConfig } from './services.js';
 import { formatAction } from './actions.js';
 
@@ -26,7 +26,7 @@ export class VoiceSession extends EventEmitter {
     Object.assign(this, { settings, services });
     this.transcription = transcription || new Transcription({ key, settings, model: services.transcriptionModel, language: services.transcriptionLanguage });
     this.llm = llm || new StrataClient({ ...services, model });
-    this.speaker = speech || new OpenAISpeech({ key, model: services.ttsModel });
+    this.speaker = speech || new ElevenLabsSpeech({ key, model: services.ttsModel, voiceId: services.voiceId, timeoutMs: services.speechTimeoutMs });
     this.ready = false; this.closed = false; this.generating = false;
     this.history = []; this.pending = []; this.turn = null; this.connectionAbort = new AbortController();
     this.transcription.on('fault', error => { if (!this.closed) this.emit('fault', error); });
@@ -85,12 +85,15 @@ export class VoiceSession extends EventEmitter {
   active(turn) { return !this.closed && !turn.discard && this.turn === turn; }
   async say(turn, text) {
     if (!text || !this.active(turn)) return;
-    for await (const pcm of this.speaker.synthesize(text, this.settings, turn.controller.signal)) {
-      if (!this.active(turn)) return;
-      turn.controller.signal.throwIfAborted(); turn.bytes += pcm.length; this.emit('audio', pcm);
-    }
-    if (this.active(turn)) turn.segments.push({ text, endMs: turn.bytes / 48 });
+    const pcm = await this.speaker.synthesize(text, this.settings, turn.controller.signal);
+    if (!this.active(turn)) return;
+    turn.controller.signal.throwIfAborted();
+    if (!Buffer.isBuffer(pcm) || !pcm.length || pcm.length % 2) throw new Error('Invalid TTS PCM segment');
+    turn.bytes += pcm.length;
+    turn.segments.push({ text, endMs: turn.bytes / 48 });
+    this.emit('audio', pcm);
   }
+
   async run(turn, messages) {
     let pending = '';
     try {
@@ -136,3 +139,4 @@ export class VoiceSession extends EventEmitter {
     this.stop(0); this.transcription.close(); this.history = []; this.pending = [];
   }
 }
+

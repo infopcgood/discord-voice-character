@@ -1,12 +1,12 @@
-# 디스코드 음성 캐릭터 봇 v3
+# 디스코드 음성 캐릭터 봇 v4
 
-**답변 생성은 로컬 Strata, 음성 인식·발화 감지·음성 합성은 온라인 OpenAI**를 사용합니다. Windows에서는 `start.cmd`, Linux에서는 `./start.sh`로 실행하고 디스코드 `/ai` 명령으로 조작합니다. 기존 v1/v2 사용자는 [v3 업데이트 안내](UPDATE-v3.md)를 먼저 읽으세요.
+**답변 생성은 로컬 Strata, 음성 인식·발화 감지·음성 합성은 온라인 ElevenLabs**를 사용합니다. Windows에서는 `start.cmd`, Linux에서는 `./start.sh`로 실행하고 디스코드 `/ai` 명령으로 조작합니다. 기존 사용자는 [v4 업데이트 안내](UPDATE-v4.md)를 먼저 읽으세요.
 
 ## 1. 설정과 실행
 
 1. Node.js 24를 설치합니다.
 2. Discord Developer Portal에서 봇을 만들고 봇 토큰과 Application ID를 준비합니다. 초대 범위는 `bot`, `applications.commands`, 권한은 View Channels, Send Messages, Connect, Speak입니다. Message Content Intent는 필요 없습니다.
-3. OpenAI API 키를 준비합니다. **음성 서비스에는 계속 OpenAI API 사용 요금이 발생합니다.** ChatGPT 구독과 별도입니다.
+3. ElevenLabs API 키와 사용할 Voice ID를 준비합니다. 계정에서 TTS와 Scribe Realtime 사용 권한 및 이용 약관 동의를 확인하세요. **음성 서비스에는 계속 ElevenLabs API 사용 요금이 발생합니다.** ChatGPT 구독과 별도입니다.
 4. Strata를 실행하고 API 주소와 배포 모델 ID를 확인합니다. 아래 API 계약을 충족해야 합니다.
 5. Windows에서는 `start.cmd`, Linux에서는 `./start.sh`를 한 번 실행해 생성된 `.env`를 채웁니다. 기존 사용자는 `.env.example`의 새 설정을 자신의 `.env`에 추가합니다.
 
@@ -14,7 +14,8 @@
 DISCORD_TOKEN=your-discord-bot-token
 DISCORD_CLIENT_ID=your-application-id
 DISCORD_GUILD_IDS=
-OPENAI_API_KEY=your-openai-api-key
+ELEVENLABS_API_KEY=your-elevenlabs-api-key
+ELEVENLABS_VOICE_ID=your-elevenlabs-voice-id
 STRATA_BASE_URL=http://127.0.0.1:8000/v1
 STRATA_MODEL=your-served-model-id
 STRATA_API_KEY=
@@ -36,7 +37,7 @@ nano .env
 ./start.sh
 ```
 
-이미 `.env`를 설정했다면 `./start.sh`만 실행하면 됩니다. 스크립트는 기존 `.env`를 유지하고, 누락되거나 버전이 맞지 않는 의존성을 설치한 뒤 설정·코덱 점검과 명령어 등록을 거쳐 봇을 시작합니다. `Ctrl+C`로 종료합니다. Strata는 별도로 실행해 두어야 하며, 음성 인식·합성에는 계속 온라인 OpenAI를 사용합니다. 다른 폴더에서 스크립트의 경로를 지정해 실행해도 됩니다.
+이미 `.env`를 설정했다면 `./start.sh`만 실행하면 됩니다. 스크립트는 기존 `.env`를 유지하고, 누락되거나 버전이 맞지 않는 의존성을 설치한 뒤 설정·코덱 점검과 명령어 등록을 거쳐 봇을 시작합니다. `Ctrl+C`로 종료합니다. Strata는 별도로 실행해 두어야 하며, 음성 인식·합성에는 계속 온라인 ElevenLabs를 사용합니다. 다른 폴더에서 스크립트의 경로를 지정해 실행해도 됩니다.
 
 ### 수동 실행과 점검
 
@@ -48,7 +49,7 @@ npm run register
 npm start
 ```
 
-`check`는 설정과 코덱을 점검합니다. `check -- --network`는 Strata에 **최대 1토큰의 점검 요청**을 보내 모델을 확인합니다. `/ai join`과 모델 변경 때도 이 점검을 수행한 뒤 음성 인식 세션을 엽니다. OpenAI TTS는 실제 발화 때 확인됩니다.
+`check`는 설정과 코덱을 점검합니다. `check -- --network`는 Strata에 **최대 1토큰의 점검 요청**을 보내 모델을 확인합니다. `/ai join`과 모델 변경 때도 이 점검을 수행한 뒤 음성 인식 세션을 엽니다. ElevenLabs TTS는 실제 발화 때 확인됩니다.
 
 ## 2. Strata API 계약
 
@@ -58,20 +59,21 @@ npm start
 - JSON 입력: `model`, `messages` (`system`, `user`, `assistant`), `stream`, `max_tokens`.
 - `stream:false` 점검: `choices[0].message`를 포함한 JSON.
 - `stream:true` 대화: `text/event-stream`, `data:` 이벤트의 `choices[0].delta.content` 텍스트, `finish_reason` 또는 `[DONE]` 종료 표시.
-- `STRATA_API_KEY`가 있을 때만 로컬 요청에 Bearer 인증을 넣습니다. OpenAI 키는 Strata로 보내지 않습니다.
+- `STRATA_API_KEY`가 있을 때만 로컬 요청에 Bearer 인증을 넣습니다. ElevenLabs 키는 Strata로 보내지 않습니다.
 - `reasoning_content` 등 별도 추론 필드는 읽지 않습니다. 모델의 최종 답변만 `content`에 보내도록 서버의 채팅 템플릿을 설정하세요. 도구 호출은 지원하지 않습니다.
-- OpenAI LLM으로 자동 우회하지 않습니다. 로컬 서버 오류는 표시하고 세션을 종료합니다.
+- ElevenLabs LLM으로 자동 우회하지 않습니다. 로컬 서버 오류는 표시하고 세션을 종료합니다.
 
 ## 3. 음성과 대화 처리
 
-Discord 음성을 24 kHz 모노 PCM16으로 받아 OpenAI **transcription 전용 Realtime 세션**에 보냅니다. 서버 VAD가 발화를 나누고 최종 전사문이 도착하면, 봇이 캐릭터 프롬프트와 서버별 대화 이력을 Strata로 보냅니다. 완성된 답변 문장부터 OpenAI TTS로 합성해 스트리밍 재생합니다. OpenAI에 답변 생성을 요청하는 `response.create`는 사용하지 않습니다.
+Discord 음성을 24 kHz 모노 PCM16으로 받아 ElevenLabs **Scribe v2 Realtime**에 보냅니다. 서버 VAD가 발화를 나누고 최종 전사문이 도착하면, 봇이 캐릭터 프롬프트와 서버별 대화 이력을 Strata로 보냅니다.
 
-- 음성 인식: 기본 `gpt-4o-mini-transcribe`. `whisper-1`, `gpt-4o-transcribe` 및 해당 지원 스냅샷으로 변경할 수 있습니다. 서버 VAD를 지원하지 않는 `gpt-live-transcribe`와 `gpt-realtime-whisper`는 이 어댑터에서 사용하지 않습니다.
-- 음성 합성: 기본 `gpt-4o-mini-tts`. PCM 출력은 기존 24 kHz 모노 → 48 kHz 스테레오 변환기로 재생합니다.
-- 자동 끼어들기: 발화가 감지되면 Strata 요청·TTS 요청·Discord 재생을 취소하고 늦게 도착한 결과를 버립니다. 새 사용자 음성은 계속 수신합니다.
+- 음성 인식: `scribe_v2_realtime`, `commit_strategy=vad`. 최종 `committed_transcript`만 대화 입력으로 사용합니다. 타임스탬프 부가 이벤트는 중복 입력하지 않습니다.
+- 음성 합성: 기본 `eleven_multilingual_v2`. 문장마다 ElevenLabs에서 `pcm_24000` 오디오를 끝까지 받은 뒤 검증하고 재생 대기열에 넣습니다. 각 문장 전체를 기다리므로 첫 소리가 나오기까지 합성 시간이 필요합니다.
+- 재생: 완성된 PCM을 48 kHz 스테레오 Opus 패킷으로 직접 인코딩합니다. 마지막 20 ms 프레임은 무음으로 채우고 같은 코덱으로 무음 한 프레임을 더 인코딩해 지연된 마지막 샘플도 내보냅니다. 라이브 PCM→Transform→Encoder 파이프라인을 사용하지 않으며, 합성 지연은 문장 사이 대기로 처리합니다. 합성 한 조각은 120초, 재생 대기열은 8 MiB로 제한합니다.
+- 자동 끼어들기: 첫 비어 있지 않은 부분 전사문을 받으면 Strata 요청·TTS 요청·Discord 재생을 취소합니다. Scribe는 별도 발화 시작 이벤트를 보내지 않으므로 인식 지연만큼 끼어들기가 늦어질 수 있습니다. 새 사용자 음성은 계속 수신합니다.
 - 대화 기억: 서버별 메모리에만 보관합니다. `HISTORY_MAX_CHARS`를 넘으면 오래된 발화부터 제거하고 캐릭터 프롬프트와 현재 발화는 유지합니다. 이 값은 **문자 수이며 토큰 수가 아닙니다.** 배포 모델의 문맥 한도에 맞춰 조절하세요.
 - 들려주지 않은 답변: TTS에 단어별 재생 시각 정보가 없으므로 끼어들기 시 **끝까지 재생된 문장 조각만** 이력에 남깁니다. 중간에 끊긴 문장의 들린 앞부분도 보수적으로 제외합니다.
-- `/ai stop`: 미처리 전사문, 현재 입력, 생성·재생을 모두 취소합니다. `/ai reset`: 새 세션을 열고 대화 기억을 초기화합니다.
+- `/ai stop`: 미처리 전사문, 현재 입력, 생성·재생을 모두 취소합니다. STT 소켓을 교체하고 이전 소켓의 늦은 전사문을 버립니다. 새 세션이 준비될 때까지 짧게 입력을 중단합니다. `/ai reset`: 새 세션을 열고 대화 기억을 초기화합니다.
 - 여러 서버는 하나의 로컬 추론 동시 실행 한도를 공유합니다 (`STRATA_MAX_CONCURRENT`, 기본 1). 대화 이력과 음성은 서버별로 분리됩니다.
 - 사람끼리 겹친 음성은 혼합됩니다. 화자 분리 기능이 아닙니다. 헤드셋을 권장합니다.
 
@@ -84,10 +86,10 @@ Discord 음성을 24 kHz 모노 PCM16으로 받아 OpenAI **transcription 전용
 | `/ai persona` | 캐릭터 프롬프트 입력, 최대 4,000자 |
 | `/ai reload` | `persona.txt` 다시 읽기, 최대 12,000자 |
 | `/ai model name:org/model` | 이 서버의 **Strata LLM 모델** 선택 |
-| `/ai voice name:marin` | 온라인 합성 목소리 선택 |
-| `/ai speed value:1.0` | 말하기 속도 0.25~1.5배 |
+| `/ai voice name:default` | 환경변수의 목소리 선택 (또는 실제 ElevenLabs Voice ID 입력) |
+| `/ai speed value:1.0` | 말하기 속도 0.7~1.2배 |
 | `/ai volume percent:80` | 볼륨 0~200% |
-| `/ai silence seconds:1.2` | 발화 끝 침묵 감지 0.2~5초 |
+| `/ai silence seconds:1.2` | 발화 끝 침묵 감지 0.3~3초 |
 | `/ai sensitivity threshold:0.5` | VAD 감지 기준 0.1~0.9 |
 | `/ai overlap enabled:True` | 겹친 참가자 음성 혼합 |
 | `/ai interrupt enabled:True` | AI 발화 중 자동 끼어들기 |
@@ -95,13 +97,13 @@ Discord 음성을 24 kHz 모노 PCM16으로 받아 OpenAI **transcription 전용
 | `/ai stop`, `/ai reset` | 현재 발화 취소·기억 초기화 |
 | `/ai status` | LLM·음성 서비스 및 설정 확인 |
 
-목소리: `marin`, `cedar`, `alloy`, `ash`, `ballad`, `coral`, `echo`, `sage`, `shimmer`, `verse`.
+목소리는 ElevenLabs Voice ID를 입력합니다. `default`는 `.env`의 `ELEVENLABS_VOICE_ID`를 사용합니다. 기존 OpenAI 목소리 이름은 자동으로 `default`로 이전합니다.
 
-볼륨·침묵·겹침·끼어들기·감지 기준 변경은 기억을 유지합니다. 모델·목소리·속도·프롬프트 변경은 새 세션을 열며 기억을 초기화합니다. 연결 점검에 실패하면 기존 연결과 설정을 유지합니다. 설정은 `data/<서버ID>.json`에 저장됩니다. 모델 ID는 Strata가 실제 서비스하는 ID여야 하며 `/`도 허용합니다.
+볼륨·침묵·겹침·끼어들기·감지 기준 변경은 기억을 유지합니다. 모델·목소리·속도·프롬프트 변경은 새 세션을 열며 기억을 초기화합니다. 모델·프롬프트 변경의 연결 점검에 실패하면 기존 연결과 설정을 유지합니다. 침묵·감지 기준 변경은 STT 소켓을 다시 연결하므로 진행 중인 미확정 음성과 재연결 중 입력은 버립니다. 재연결에 실패하면 오류를 표시하고 종료합니다. 목소리의 실제 합성 권한은 첫 발화 때 확인합니다. 설정은 `data/<서버ID>.json`에 저장됩니다. 모델 ID는 Strata가 실제 서비스하는 ID여야 하며 `/`도 허용합니다.
 
 기본적으로 봇을 부른 사용자(같은 음성채널)와 서버 관리자만 설정을 바꿀 수 있습니다. `ALLOWED_USER_IDS`를 지정하면 명령 사용자를 제한할 수 있습니다. 채널에서 나가면 음성 수신 참여가 해제됩니다. 스테이지 채널은 지원하지 않습니다.
 
-`/ai act text:손을 흔들며 웃는다`처럼 입력하면 작성자의 서버 표시 이름과 함께 **대사가 아닌 사용자 행동**으로 Strata에 전달됩니다 (최대 2,000자, 중괄호 불필요). 행동은 현재 대화 이력에 남고 캐릭터의 답변만 기존 OpenAI TTS로 읽습니다. 캐릭터 프롬프트나 TTS 말투 설정을 바꾸는 명령은 아닙니다. 봇과 같은 음성채널에 있는 허용된 사용자는 마이크 수신 참여 없이 사용할 수 있습니다. 발화나 응답이 진행 중이면 기다렸다가 처리하며, 그동안 들어온 행동과 전사문은 다음 입력에 함께 포함될 수 있습니다. `/ai stop`은 대기 중인 행동도 취소하고 `/ai reset`은 행동을 포함한 대화 기억을 지웁니다. 업데이트 후 봇을 재시작하면 새 명령이 등록됩니다.
+`/ai act text:손을 흔들며 웃는다`처럼 입력하면 작성자의 서버 표시 이름과 함께 **대사가 아닌 사용자 행동**으로 Strata에 전달됩니다 (최대 2,000자, 중괄호 불필요). 행동은 현재 대화 이력에 남고 캐릭터의 답변만 ElevenLabs TTS로 읽습니다. 캐릭터 프롬프트나 TTS 말투 설정을 바꾸는 명령은 아닙니다. 봇과 같은 음성채널에 있는 허용된 사용자는 마이크 수신 참여 없이 사용할 수 있습니다. 발화나 응답이 진행 중이면 기다렸다가 처리하며, 그동안 들어온 행동과 전사문은 다음 입력에 함께 포함될 수 있습니다. `/ai stop`은 대기 중인 행동도 취소하고 `/ai reset`은 행동을 포함한 대화 기억을 지웁니다. 업데이트 후 봇을 재시작하면 새 명령이 등록됩니다.
 
 ## 5. 선택 설정과 문제 해결
 
@@ -109,7 +111,9 @@ Discord 음성을 24 kHz 모노 PCM16으로 받아 OpenAI **transcription 전용
 
 | 설정 | 기본값 / 의미 |
 | --- | --- |
-| `OPENAI_TRANSCRIBE_LANGUAGE` | 빈 값: 자동 인식, `ko`: 한국어 힌트 |
+| `ELEVENLABS_STT_LANGUAGE` | 빈 값: 자동 인식, `ko`: 한국어 힌트 |
+| `ELEVENLABS_TTS_MODEL` | `eleven_multilingual_v2`: 합성 모델 |
+| `ELEVENLABS_TIMEOUT_MS` | 60000: 문장별 합성 요청 시간 한도 |
 | `STRATA_MAX_TOKENS` | 128000: 한 답변의 최대 출력 토큰 수 (Strata 모델이 지원하는 한도에 따름) |
 | `STRATA_TIMEOUT_MS` | 60000: 추론 대기열과 응답 스트림 시간 한도 |
 | `RESPONSE_TIMEOUT_MS` | 180000: 합성을 포함한 전체 응답 시간 한도 |
@@ -117,15 +121,14 @@ Discord 음성을 24 kHz 모노 PCM16으로 받아 OpenAI **transcription 전용
 | `IDLE_MINUTES` | 10: 대화가 없을 때 퇴장 |
 | `SPEECH_SESSION_MINUTES` | 55 (1~55): 온라인 전사 세션 종료 전 퇴장 |
 
-Strata 연결이 실패하면 주소·포트·모델 ID·선택적 인증과 로컬 서버 로그를 확인하세요. 봇을 실행하는 PC가 Strata에 접속할 수 있어야 합니다. 음성 연결은 OpenAI API 키와 전사 모델 권한을, 합성 오류는 TTS 모델·목소리를 확인하세요. 설정 변경 후 봇을 재시작합니다.
+Strata 연결이 실패하면 주소·포트·모델 ID·선택적 인증과 로컬 서버 로그를 확인하세요. 봇을 실행하는 PC가 Strata에 접속할 수 있어야 합니다. 음성 연결은 ElevenLabs API 키와 전사 모델 권한을, 합성 오류는 TTS 모델·목소리를 확인하세요. 설정 변경 후 봇을 재시작합니다.
 
 ## 6. 데이터와 검증
 
-참여자의 원본 음성은 OpenAI로 전송됩니다. 전사문과 캐릭터 프롬프트·대화 이력은 설정한 Strata 서버로 전송됩니다. 생성된 답변 텍스트는 OpenAI로 보내 음성으로 합성합니다. 따라서 LLM만 로컬화되며 **음성과 대화문 전체가 로컬에만 머무르는 구성은 아닙니다.** 봇은 원본 음성·대화문을 로컬 파일에 기록하지 않습니다. OpenAI와 Strata 자체의 로그·보관 정책은 각각의 서비스 설정을 따릅니다. 응답은 AI가 만든 목소리이며 음성채널 전체에 들립니다.
+참여자의 원본 음성은 ElevenLabs로 전송됩니다. 전사문과 캐릭터 프롬프트·대화 이력은 설정한 Strata 서버로 전송됩니다. 생성된 답변 텍스트는 ElevenLabs로 보내 음성으로 합성합니다. 따라서 LLM만 로컬화되며 **음성과 대화문 전체가 로컬에만 머무르는 구성은 아닙니다.** 봇은 원본 음성·대화문을 로컬 파일에 기록하지 않습니다. ElevenLabs와 Strata 자체의 로그·보관 정책은 각각의 서비스 설정을 따릅니다. 응답은 AI가 만든 목소리이며 음성채널 전체에 들립니다.
 
-`npm test`는 오디오 변환·실제 Opus 코덱·Discord 브리지·참가자 필터·서버 격리·설정 이전과 새 어댑터의 HTTP/SSE·자격 증명 분리·전사 순서·끼어들기·늦은 응답 차단·이력 처리를 검사합니다. 외부 Discord/OpenAI/Strata 호출은 모의 처리하며 HTTP 계약 검사는 로컬 테스트 서버를 사용합니다. GitHub Actions는 Windows와 Linux에서 실행합니다.
+`npm test`는 실제 Discord AudioPlayer의 자연 종료·취소·문장 간 지연·Opus 코덱·Discord 브리지·참가자 필터·서버 격리·설정 이전과 새 어댑터의 HTTP/SSE·자격 증명 분리·최종 전사 처리·끼어들기·늦은 응답 차단·이력 처리를 검사합니다. 외부 Discord 연결/ElevenLabs/Strata 호출은 모의 처리하며 HTTP 계약 검사는 로컬 테스트 서버를 사용합니다. GitHub Actions는 Windows와 Linux에서 실행합니다.
 
-배포 전 실제 점검: `/ai join` → 한국어 대화 → 다음 질문으로 기억 확인 → 응답 도중 끼어들기 → `/ai stop` 후 늦은 답변이 나오지 않는지 확인 → 두 번째 서버 동시 접속 → 잘못된 `/ai model` 변경 후 기존 대화가 유지되는지 확인 → `/ai reset` → `/ai leave`. 실제 사용자의 Strata 배포와 Discord/OpenAI 통화는 인증 정보와 실행 환경을 넣어 별도로 확인해야 합니다.
+배포 전 실제 점검: `/ai join` → 한국어 대화 → 다음 질문으로 기억 확인 → 응답 도중 끼어들기 → `/ai stop` 후 늦은 답변이 나오지 않는지 확인 → 두 번째 서버 동시 접속 → 잘못된 `/ai model` 변경 후 기존 대화가 유지되는지 확인 → `/ai reset` → `/ai leave`. 실제 사용자의 Strata 배포와 Discord/ElevenLabs 통화는 인증 정보와 실행 환경을 넣어 별도로 확인해야 합니다.
 
-공식 API 참고: [Realtime 전사](https://developers.openai.com/api/docs/guides/realtime-transcription), [Realtime 세션 이벤트](https://developers.openai.com/api/reference/resources/realtime/client-events), [OpenAI WebSocket 전사 연결](https://github.com/openai/openai-node/blob/main/docs/realtime.md), [음성 합성](https://developers.openai.com/api/docs/guides/text-to-speech).
-
+공식 API 참고: [Scribe Realtime](https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime), [STT 이벤트](https://elevenlabs.io/docs/eleven-api/guides/how-to/speech-to-text/realtime/event-reference), [음성 합성](https://elevenlabs.io/docs/api-reference/text-to-speech/convert).
