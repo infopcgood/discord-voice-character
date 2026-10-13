@@ -56,8 +56,8 @@ npm start
 이 저장소에는 사용자의 Strata 배포 명세가 제공되지 않았으므로, `src/llm.js` 한 파일에 **OpenAI 호환 Chat Completions** 계약을 명시했습니다. Strata가 다른 프로토콜을 사용하면 이 어댑터를 수정해야 합니다. 실제 배포 호환성은 점검 요청과 통화로 확인하세요.
 
 - `POST {STRATA_BASE_URL}/chat/completions`
-- JSON 입력: `model`, `messages` (`system`, `user`, `assistant`), `stream`, `max_tokens`, `reasoning_effort: "none"`.
-- 모든 답변과 연결 점검 요청에 `reasoning_effort: "none"`을 보내 Strata의 thinking을 끕니다. [Strata 공식 API 설정](https://github.com/Niko1221/Strata/blob/main/docs/DETAILS.md#api)을 사용하며 별도 `.env` 설정은 필요 없습니다.
+- JSON 입력: `model`, `messages` (`system`, `user`, `assistant`), `stream`, `max_tokens`, `reasoning_effort: "low"`.
+- 모든 답변과 연결 점검 요청에 `reasoning_effort: "low"`를 보내 Strata의 thinking 강도를 낮게 설정합니다. [Strata 공식 API 설정](https://github.com/Niko1221/Strata/blob/main/docs/DETAILS.md#api)을 사용하며 별도 `.env` 설정은 필요 없습니다.
 - `stream:false` 점검: `choices[0].message`를 포함한 JSON.
 - `stream:true` 대화: `text/event-stream`, `data:` 이벤트의 `choices[0].delta.content` 텍스트, `finish_reason` 또는 `[DONE]` 종료 표시.
 - `STRATA_API_KEY`가 있을 때만 로컬 요청에 Bearer 인증을 넣습니다. ElevenLabs 키는 Strata로 보내지 않습니다.
