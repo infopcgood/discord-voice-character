@@ -3,6 +3,7 @@ import { Transcription } from './transcription.js';
 import { StrataClient } from './llm.js';
 import { OpenAISpeech } from './speech.js';
 import { serviceConfig } from './services.js';
+import { formatAction } from './actions.js';
 
 // Bound each TTS request and start speaking once a sentence is available.
 export function takeSpeechChunk(text, flush = false) {
@@ -47,6 +48,15 @@ export class VoiceSession extends EventEmitter {
     this.ready = true;
   }
   append(pcm) { this.transcription.append(pcm); }
+  queueAction(text, actor) {
+    if (!this.ready || this.closed) throw new Error('AI가 아직 준비되지 않았습니다.');
+    const action = formatAction(text, actor);
+    const pending = [...this.pending, action];
+    if (pending.length > 32 || this.settings.persona.length + pending.join('\n').length > this.services.historyChars) {
+      throw new Error('행동을 추가할 대화 공간이 부족합니다. 입력을 줄이거나 현재 응답이 끝난 뒤 다시 시도하세요.');
+    }
+    this.pending = pending;
+  }
   clearInput() { this.pending = []; this.transcription.clearInput(); }
   async updateListening(settings) { await this.transcription.updateListening(settings); this.settings = settings; }
   messages(user) {

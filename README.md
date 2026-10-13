@@ -63,6 +63,7 @@ Discord 음성을 24 kHz 모노 PCM16으로 받아 OpenAI **transcription 전용
 | 명령어 | 기능 |
 | --- | --- |
 | `/ai join`, `/ai leave` | 음성채널 입장·퇴장 |
+| `/ai act text:손을 흔들며 웃는다` | 사용자 행동을 Strata에 전달하고 캐릭터가 음성으로 반응 |
 | `/ai persona` | 캐릭터 프롬프트 입력, 최대 4,000자 |
 | `/ai reload` | `persona.txt` 다시 읽기, 최대 12,000자 |
 | `/ai model name:org/model` | 이 서버의 **Strata LLM 모델** 선택 |
@@ -82,6 +83,8 @@ Discord 음성을 24 kHz 모노 PCM16으로 받아 OpenAI **transcription 전용
 볼륨·침묵·겹침·끼어들기·감지 기준 변경은 기억을 유지합니다. 모델·목소리·속도·프롬프트 변경은 새 세션을 열며 기억을 초기화합니다. 연결 점검에 실패하면 기존 연결과 설정을 유지합니다. 설정은 `data/<서버ID>.json`에 저장됩니다. 모델 ID는 Strata가 실제 서비스하는 ID여야 하며 `/`도 허용합니다.
 
 기본적으로 봇을 부른 사용자(같은 음성채널)와 서버 관리자만 설정을 바꿀 수 있습니다. `ALLOWED_USER_IDS`를 지정하면 명령 사용자를 제한할 수 있습니다. 채널에서 나가면 음성 수신 참여가 해제됩니다. 스테이지 채널은 지원하지 않습니다.
+
+`/ai act text:손을 흔들며 웃는다`처럼 입력하면 작성자의 서버 표시 이름과 함께 **대사가 아닌 사용자 행동**으로 Strata에 전달됩니다 (최대 2,000자, 중괄호 불필요). 행동은 현재 대화 이력에 남고 캐릭터의 답변만 기존 OpenAI TTS로 읽습니다. 캐릭터 프롬프트나 TTS 말투 설정을 바꾸는 명령은 아닙니다. 봇과 같은 음성채널에 있는 허용된 사용자는 마이크 수신 참여 없이 사용할 수 있습니다. 발화나 응답이 진행 중이면 기다렸다가 처리하며, 그동안 들어온 행동과 전사문은 다음 입력에 함께 포함될 수 있습니다. `/ai stop`은 대기 중인 행동도 취소하고 `/ai reset`은 행동을 포함한 대화 기억을 지웁니다. 업데이트 후 봇을 재시작하면 새 명령이 등록됩니다.
 
 ## 5. 선택 설정과 문제 해결
 
@@ -108,3 +111,4 @@ Strata 연결이 실패하면 주소·포트·모델 ID·선택적 인증과 로
 배포 전 실제 점검: `/ai join` → 한국어 대화 → 다음 질문으로 기억 확인 → 응답 도중 끼어들기 → `/ai stop` 후 늦은 답변이 나오지 않는지 확인 → 두 번째 서버 동시 접속 → 잘못된 `/ai model` 변경 후 기존 대화가 유지되는지 확인 → `/ai reset` → `/ai leave`. 실제 사용자의 Strata 배포와 Discord/OpenAI 통화는 인증 정보와 실행 환경을 넣어 별도로 확인해야 합니다.
 
 공식 API 참고: [Realtime 전사](https://developers.openai.com/api/docs/guides/realtime-transcription), [Realtime 세션 이벤트](https://developers.openai.com/api/reference/resources/realtime/client-events), [OpenAI WebSocket 전사 연결](https://github.com/openai/openai-node/blob/main/docs/realtime.md), [음성 합성](https://developers.openai.com/api/docs/guides/text-to-speech).
+

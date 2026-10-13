@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter, once } from 'node:events';
 import { VoiceSession, takeSpeechChunk } from '../src/voice-session.js';
 import { serviceConfig } from '../src/services.js';
+import { formatAction } from '../src/actions.js';
 
 class Recognition extends EventEmitter {
   async connect() { this.connected = true; }
@@ -43,6 +44,43 @@ test('recognized text and persona go to Strata, speech is streamed, history comm
     assert.equal(f.session.history[1].content, 'First. Second.');
     await reply(f, '다음 질문'); assert.equal(f.calls[1][2].role, 'assistant');
   } finally { f.session.close(); }
+});
+
+test('typed actions are user turns, preserve conversation, and only the reply reaches TTS', async () => {
+  const f = fixture(); await f.session.connect();
+  try {
+    await reply(f, '안녕'); f.session.playbackFinished();
+    f.session.queueAction('손을 흔든다', '민수');
+    const done = once(f.session, 'done'); f.session.respond(); await done;
+    assert.deepEqual(f.calls[1].at(-1), { role: 'user', content: formatAction('손을 흔든다', '민수') });
+    assert.equal(f.calls[1][0].content, f.session.settings.persona);
+    assert.equal(f.calls[1][1].content, '안녕');
+    assert.equal(f.calls[1][2].content, 'First. Second.');
+    assert.deepEqual(f.said, ['First.', 'Second.', 'First.', 'Second.']);
+    f.session.playbackFinished();
+    await reply(f, '다음');
+    assert.ok(f.calls[2].some(message => message.content === formatAction('손을 흔든다', '민수')));
+  } finally { f.session.close(); }
+});
+
+test('invalid or oversized action queues preserve pending speech and do not fault the session', async () => {
+  const f = fixture();
+  assert.throws(() => f.session.queueAction('행동', '민수'), /준비/);
+  await f.session.connect();
+  try {
+    f.transcription.emit('transcript', '진행 중인 대화');
+    assert.throws(() => f.session.queueAction(' ', '민수'), /1~2000/);
+    assert.throws(() => f.session.queueAction('x'.repeat(2001), '민수'), /1~2000/);
+    f.session.services = { ...f.session.services, historyChars: 50 };
+    assert.throws(() => f.session.queueAction('행동', '민수'), /공간/);
+    assert.deepEqual(f.session.pending, ['진행 중인 대화']);
+    assert.equal(f.session.ready, true);
+    f.session.services = { ...f.session.services, historyChars: 24000 };
+    for (let i = 0; i < 31; i++) f.session.queueAction('행동', '민수');
+    assert.throws(() => f.session.queueAction('행동', '민수'), /공간/);
+    f.session.clearInput(); assert.deepEqual(f.session.pending, []);
+  } finally { f.session.close(); }
+  assert.throws(() => f.session.queueAction('행동', '민수'), /준비/);
 });
 
 test('interruption after generation retains only completely heard speech chunks', async () => {
