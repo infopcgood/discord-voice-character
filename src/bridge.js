@@ -7,11 +7,11 @@ import { VoiceMixer, FRAME_BYTES } from './mixer.js';
 import { idleMinutes, validateSettings } from './config.js';
 
 export class Bridge {
-  constructor({ connection, channel, owner, settings, notify, onClose, apiFactory = options => new VoiceSession(options), player = createAudioPlayer() }) {
+  constructor({ connection, channel, owner, settings, notify, onClose, listeners = [owner], apiFactory = options => new VoiceSession(options), player = createAudioPlayer() }) {
     Object.assign(this, { connection, channel, owner, notify, onClose, apiFactory, player });
     this.settings = validateSettings(settings);
     this.services = serviceConfig();
-    this.listeners = new Set([owner]); this.inputs = new Map();
+    this.listeners = new Set(listeners); this.inputs = new Map();
     this.mixer = new VoiceMixer({ overlap: this.settings.overlap });
     this.connection.subscribe(this.player);
     this.audioQueue = []; this.queuedBytes = 0; this.playedMs = 0; this.playbackEnded = false;
