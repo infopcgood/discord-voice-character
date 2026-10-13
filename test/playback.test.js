@@ -45,19 +45,27 @@ test('real player stop during playback and before first frame releases the codec
 test('direct packets preserve stereo duration, pad the tail, and apply live volume without a transform', async () => {
   const pcm = Buffer.alloc(960 * 3 + 2);
   for (let i = 0; i < pcm.length; i += 2) pcm.writeInt16LE(Math.round(8000 * Math.sin(i / 2 * 2 * Math.PI * 440 / 24000)), i);
-  const source = new SpeechPackets(pcm, 1); const packets = [];
+  const source = new SpeechPackets(pcm, 1); const packets = []; const frames = [];
+  const encode = source.codec.encode.bind(source.codec);
+  source.codec.encode = (frame, samples) => { frames.push(Buffer.from(frame)); return encode(frame, samples); };
   for await (const packet of source) packets.push(packet);
   assert.equal(packets.length, 4);
+  // Opus is lossy; verify exact stereo/resampling invariants before compression.
+  for (const frame of frames) {
+    for (let i = 0; i < frame.length; i += 4) assert.equal(frame.readInt16LE(i), frame.readInt16LE(i + 2));
+  }
+  assert.ok(frames.at(-1).subarray(8).every(value => value === 0));
   const decoder = new OpusScript(48000, 2, OpusScript.Application.AUDIO);
   try {
     const decoded = Buffer.concat(packets.map(packet => Buffer.from(decoder.decode(packet))));
     assert.equal(decoded.length, 3840 * 4); assert.ok(decoded.some(value => value !== 0));
-    for (let i = 0; i < decoded.length; i += 4) assert.ok(Math.abs(decoded.readInt16LE(i) - decoded.readInt16LE(i + 2)) <= 1);
   } finally { decoder.delete(); }
-  const muted = new SpeechPackets(pcm, 1); muted.setVolume(0);
-  const silentPackets = []; for await (const packet of muted) silentPackets.push(packet);
-  const silentDecoder = new OpusScript(48000, 2, OpusScript.Application.AUDIO);
-  try { for (const packet of silentPackets) assert.ok(Buffer.from(silentDecoder.decode(packet)).every(value => value === 0)); }
-  finally { silentDecoder.delete(); }
+  const muted = new SpeechPackets(Buffer.concat(Array(10).fill(pcm)), 1); const volumeFrames = [];
+  const encodeMuted = muted.codec.encode.bind(muted.codec);
+  muted.codec.encode = (frame, samples) => { volumeFrames.push(Buffer.from(frame)); return encodeMuted(frame, samples); };
+  for await (const _packet of muted) muted.setVolume(0);
+  assert.ok(volumeFrames[0].some(value => value !== 0));
+  // Readable may prefetch a packet; the remaining audio must honor live mute.
+  assert.ok(volumeFrames.at(-1).every(value => value === 0));
   assert.throws(() => new SpeechPackets(Buffer.alloc(1)), /Invalid/);
 });
