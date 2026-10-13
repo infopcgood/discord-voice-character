@@ -13,15 +13,17 @@ export function serviceConfig(env = process.env) {
       throw new Error('STRATA_BASE_URL에는 인증 정보, 쿼리, 해시 없이 http(s) API 주소만 입력하세요.');
     }
   }
-  const transcriptionModel = env.OPENAI_TRANSCRIBE_MODEL?.trim() || 'gpt-4o-mini-transcribe';
-  if (!/^(whisper-1|gpt-4o-(mini-)?transcribe(?:-\d{4}-\d{2}-\d{2})?)$/.test(transcriptionModel)) {
-    throw new Error('OPENAI_TRANSCRIBE_MODEL에는 server_vad를 지원하는 whisper-1 또는 gpt-4o[-mini]-transcribe 모델을 사용하세요.');
-  }
-  const ttsModel = env.OPENAI_TTS_MODEL?.trim() || 'gpt-4o-mini-tts';
-  if (!/^gpt-4o-mini-tts(?:-\d{4}-\d{2}-\d{2})?$/.test(ttsModel)) throw new Error('OPENAI_TTS_MODEL에는 gpt-4o-mini-tts 계열 모델을 사용하세요.');
+  const transcriptionModel = env.ELEVENLABS_STT_MODEL?.trim() || 'scribe_v2_realtime';
+  if (transcriptionModel !== 'scribe_v2_realtime') throw new Error('ELEVENLABS_STT_MODEL에는 scribe_v2_realtime을 사용하세요.');
+  const transcriptionLanguage = env.ELEVENLABS_STT_LANGUAGE?.trim() || '';
+  if (transcriptionLanguage && !/^[a-z]{2,3}$/.test(transcriptionLanguage)) throw new Error('ELEVENLABS_STT_LANGUAGE에는 ko 등의 언어 코드를 입력하세요.');
+  const ttsModel = env.ELEVENLABS_TTS_MODEL?.trim() || 'eleven_multilingual_v2';
+  const voiceId = env.ELEVENLABS_VOICE_ID?.trim() || '';
+  if (voiceId && !/^[a-zA-Z0-9_-]{8,128}$/.test(voiceId)) throw new Error('ELEVENLABS_VOICE_ID에 Voice ID를 입력하세요.');
   return {
     baseURL, apiKey: env.STRATA_API_KEY?.trim() || '',
-    transcriptionModel, transcriptionLanguage: env.OPENAI_TRANSCRIBE_LANGUAGE?.trim() || '', ttsModel,
+    transcriptionModel, transcriptionLanguage, ttsModel, voiceId,
+    speechTimeoutMs: integer('ELEVENLABS_TIMEOUT_MS', 60000, 1000, 300000),
     maxTokens: integer('STRATA_MAX_TOKENS', 128000, 1, 128000),
     concurrency: integer('STRATA_MAX_CONCURRENT', 1, 1, 16),
     requestTimeoutMs: integer('STRATA_TIMEOUT_MS', 60000, 1000, 300000),
@@ -32,8 +34,9 @@ export function serviceConfig(env = process.env) {
 }
 
 export function requireServices(env = process.env) {
-  for (const name of ['OPENAI_API_KEY', 'STRATA_BASE_URL', 'STRATA_MODEL']) {
+  for (const name of ['ELEVENLABS_API_KEY', 'ELEVENLABS_VOICE_ID', 'STRATA_BASE_URL', 'STRATA_MODEL']) {
     if (!env[name]?.trim()) throw new Error(`.env에 ${name} 값을 입력하세요.`);
   }
   return serviceConfig(env);
 }
+

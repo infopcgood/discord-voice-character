@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter, once } from 'node:events';
 import { PassThrough } from 'node:stream';
 import OpusScript from 'opusscript';
+import { createAudioPlayer, AudioPlayerStatus, NoSubscriberBehavior, entersState } from '@discordjs/voice';
 import { Bridge } from '../src/bridge.js';
 import { VoiceSession } from '../src/voice-session.js';
 import { VoiceMixer, FRAME_BYTES } from '../src/mixer.js';
@@ -26,7 +27,7 @@ class MockPlayer extends EventEmitter {
   play(resource) { this.resource = resource; this.state = { status: 'playing', resource }; }
   stop() { const active = this.state.status !== 'idle'; this.state = { status: 'idle' }; if (active) this.emit('idle'); }
 }
-function fixture(overrides = {}) {
+function fixture(overrides = {}, player = new MockPlayer()) {
   const connection = new EventEmitter(); connection.state = { status: 'ready' }; connection.subscribe = () => {};
   connection.destroy = () => { connection.state.status = 'destroyed'; connection.emit('destroyed'); };
   const sources = new Map();
@@ -34,8 +35,8 @@ function fixture(overrides = {}) {
     const source = new PassThrough({ objectMode: true }); sources.set(id, source); source.options = options; return source;
   } };
   const users = new Map([['1', { user: { bot: false } }], ['2', { user: { bot: false } }], ['3', { user: { bot: true } }]]);
-  const api = new MockApi(); const player = new MockPlayer();
-  const settings = validateSettings({ model: 'local/model', persona: 'hi', voice: 'marin', speed: 1, volume: 0.8, ...overrides });
+  const api = new MockApi();
+  const settings = validateSettings({ model: 'local/model', persona: 'hi', voice: 'default', speed: 1, volume: 0.8, ...overrides });
   const bridge = new Bridge({ connection, channel: { members: users }, owner: '1', settings, notify() {}, onClose() {}, player, apiFactory: () => api });
   return { bridge, api, player, sources, connection };
 }
@@ -69,18 +70,21 @@ test('mixer carries incomplete frames, bounds backlog and purges users', () => {
   assert.equal(mixer.tick().pcm.readInt16LE(0), 2000);
   mixer.remove('a'); assert.equal(mixer.tick().active, false);
 });
-test('natural playback completion releases ended streams without destroying them', async () => {
-  const { bridge, api, player } = fixture();
+test('sentence resources drain in order and history finishes only after audioEnd', async () => {
+  const { bridge, api, player } = fixture(); let finished = 0;
+  api.playbackFinished = () => { finished++; };
   try {
-    await bridge.start();
-    const output = new PassThrough(); const converter = new PassThrough();
-    output.end(); converter.end();
-    bridge.output = output; bridge.converter = converter; bridge.resource = {};
-    bridge.pendingTurn = true;
-    player.state = { status: 'idle' }; player.emit('idle');
-    assert.equal(output.destroyed, false); assert.equal(converter.destroyed, false);
-    assert.equal(bridge.output, null); assert.equal(bridge.converter, null);
-    assert.equal(api.requests, 1);
+    await bridge.start(); api.generating = true;
+    api.emit('audio', Buffer.alloc(9600)); const first = bridge.resource;
+    api.emit('audio', Buffer.alloc(4800));
+    assert.equal(bridge.audioQueue.length, 1); assert.equal(bridge.resource, first);
+    assert.equal(first.playStream, bridge.playbackSource); // No encoder/volume pipeline.
+    first.playStream.destroy(); player.stop();
+    assert.notEqual(bridge.resource, first); assert.equal(finished, 0); assert.equal(bridge.playedMs, 200);
+    bridge.playbackSource.destroy(); player.stop();
+    assert.equal(bridge.resource, null); assert.equal(bridge.queuedBytes, 0); assert.equal(finished, 0);
+    api.generating = false; api.emit('audioEnd'); api.emit('done');
+    assert.equal(finished, 1); assert.equal(bridge.responding, false);
   } finally { bridge.close(); }
 });
 test('opt-in streams decode actual Opus and remain subscribed during playback', async () => {
@@ -97,14 +101,15 @@ test('opt-in streams decode actual Opus and remain subscribed during playback', 
     assert.equal(sources.get('2').destroyed, true); assert.equal(bridge.mixer.tracks.has('2'), false);
   } finally { bridge.close(); }
 });
-test('a completed encoder stream ends playback immediately', async () => {
+test('stop destroys the active packet source and drops every queued segment', async () => {
   const { bridge, api, player } = fixture();
   try {
     await bridge.start(); api.emit('audio', Buffer.alloc(9600));
-    const resource = player.resource;
-    assert.ok(resource);
-    resource.playStream.emit('end');
-    assert.equal(player.state.status, 'idle');
+    const source = bridge.playbackSource;
+    api.emit('audio', Buffer.alloc(9600)); bridge.stop();
+    assert.equal(source.destroyed, true); assert.equal(bridge.audioQueue.length, 0);
+    assert.equal(bridge.queuedBytes, 0); assert.equal(player.state.status, 'idle');
+    assert.equal(bridge.closed, false);
   } finally { bridge.close(); }
 });
 test('a malformed Opus packet resets only that participant decoder', async () => {
@@ -136,7 +141,7 @@ test('automatic interruption clears playback but preserves new input and waits f
   const { bridge, api, player } = fixture();
   try {
     await bridge.start(); api.emit('committed'); assert.equal(api.requests, 1);
-    player.state = { status: 'playing' }; bridge.resource = { playbackDuration: 500 };
+    player.state = { status: 'playing' }; bridge.resource = { playbackDuration: 500, metadata: { durationMs: 1000 } };
     bridge.mixer.push('1', frame(1000)); api.emit('speechStart');
     assert.deepEqual(api.stops, [400]); assert.equal(player.state.status, 'idle');
     assert.equal(api.cleared, 0); bridge.tick(); assert.equal(api.frames.at(-1).readInt16LE(0), 1000);
@@ -147,7 +152,7 @@ test('automatic interruption clears playback but preserves new input and waits f
 test('interruption still stops buffered playback after generation has completed', async () => {
   const { bridge, api, player } = fixture();
   try {
-    await bridge.start(); player.state = { status: 'playing' }; bridge.resource = { playbackDuration: 800 };
+    await bridge.start(); player.state = { status: 'playing' }; bridge.resource = { playbackDuration: 800, metadata: { durationMs: 1000 } };
     api.emit('speechStart'); assert.deepEqual(api.stops, [700]); assert.equal(player.state.status, 'idle');
   } finally { bridge.close(); }
 });
@@ -229,7 +234,7 @@ test('command registration targets each server and preserves unrelated commands'
   assert.equal(calls[0].data.body.name, 'ai');
 });
 test('v1 settings migrate and new setting ranges are enforced', () => {
-  const base = { persona: 'original', voice: 'cedar', speed: 1, volume: 0.8 };
+  const base = { persona: 'original', voice: 'default', speed: 1, volume: 0.8 };
   const migrated = validateSettings(base, 'local/model');
   assert.equal(migrated.persona, 'original'); assert.equal(migrated.silenceSeconds, 0.85);
   assert.equal(migrated.interrupt, true); assert.equal(migrated.overlap, true);
@@ -243,7 +248,7 @@ test('real voice adapter waits for Discord playback before committing assistant 
   const messages = [];
   bridge.apiFactory = options => new VoiceSession({ ...options, transcription,
     llm: { async check() {}, async *stream(input) { messages.push(structuredClone(input)); yield 'Hello.'; } },
-    speech: { async *synthesize() { yield Buffer.alloc(9600); } },
+    speech: { async synthesize() { return Buffer.alloc(9600); } },
   });
   try {
     await bridge.start();
@@ -264,7 +269,7 @@ function actionFixture() {
   Object.assign(transcription, { async connect() {}, append() {}, clearInput() {}, close() {} });
   f.bridge.apiFactory = options => new VoiceSession({ ...options, transcription,
     llm: { async check() {}, async *stream(input) { messages.push(structuredClone(input)); yield '반가워요.'; } },
-    speech: { async *synthesize(text) { spoken.push(text); yield Buffer.alloc(9600); } },
+    speech: { async synthesize(text) { spoken.push(text); return Buffer.alloc(9600); } },
   });
   return { ...f, transcription, messages, spoken };
 }
@@ -331,3 +336,30 @@ test('stop cancels queued actions without a later reply', async () => {
 });
 
 
+
+
+test('real Discord playback survives synthesis gaps and repeated replies through the whole bridge', { timeout: 10000 }, async () => {
+  const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Play } });
+  const { bridge } = fixture({}, player);
+  const transcription = new EventEmitter();
+  Object.assign(transcription, { async connect() {}, append() {}, clearInput() {}, close() {} });
+  bridge.apiFactory = options => new VoiceSession({ ...options, transcription,
+    llm: { async check() {}, async *stream() { yield 'First. '; await new Promise(resolve => setTimeout(resolve, 350)); yield 'Second.'; } },
+    speech: { async synthesize() { return Buffer.alloc(960 * 3 + 2); } },
+  });
+  const failures = []; const resources = [];
+  player.on('error', error => failures.push(error));
+  player.on(AudioPlayerStatus.Playing, (_, state) => resources.push(state.resource));
+  try {
+    await bridge.start();
+    for (let turn = 0; turn < 3; turn++) {
+      const done = once(bridge.api, 'done'); bridge.act('Say hello', 'Tester'); await done;
+      await entersState(player, AudioPlayerStatus.Idle, 3000);
+      assert.equal(bridge.api.history.at(-1).content, 'First. Second.');
+      assert.equal(bridge.closed, false); assert.equal(bridge.queuedBytes, 0);
+    }
+    assert.equal(resources.length, 6);
+    assert.ok(resources.every(resource => resource.playbackDuration >= 80 && resource.edges.length === 0));
+    assert.deepEqual(failures, []);
+  } finally { bridge.close(); }
+});

@@ -25,7 +25,7 @@ fi
 if [[ ! -f .env ]]; then
   (umask 077; cp .env.example .env)
   printf '%s\n' \
-    'Created .env. Fill in the Discord, OpenAI, and Strata settings, save it,' \
+    'Created .env. Fill in the Discord, ElevenLabs, and Strata settings, save it,' \
     'then run ./start.sh again. You can edit it with: nano .env'
   exit 0
 fi
@@ -45,3 +45,4 @@ npm run register
 printf '%s\n' 'Starting the bot. Press Ctrl+C to stop.'
 # Replace the shell so SIGINT/SIGTERM reach the bot directly.
 exec node src/bot.js
+
