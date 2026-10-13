@@ -1,6 +1,6 @@
 # 디스코드 음성 캐릭터 봇 v3
 
-**답변 생성은 로컬 Strata, 음성 인식·발화 감지·음성 합성은 온라인 OpenAI**를 사용합니다. Windows에서는 `start.cmd`로 실행하고 디스코드 `/ai` 명령으로 조작합니다. 기존 v1/v2 사용자는 [v3 업데이트 안내](UPDATE-v3.md)를 먼저 읽으세요.
+**답변 생성은 로컬 Strata, 음성 인식·발화 감지·음성 합성은 온라인 OpenAI**를 사용합니다. Windows에서는 `start.cmd`, Linux에서는 `./start.sh`로 실행하고 디스코드 `/ai` 명령으로 조작합니다. 기존 v1/v2 사용자는 [v3 업데이트 안내](UPDATE-v3.md)를 먼저 읽으세요.
 
 ## 1. 설정과 실행
 
@@ -8,7 +8,7 @@
 2. Discord Developer Portal에서 봇을 만들고 봇 토큰과 Application ID를 준비합니다. 초대 범위는 `bot`, `applications.commands`, 권한은 View Channels, Send Messages, Connect, Speak입니다. Message Content Intent는 필요 없습니다.
 3. OpenAI API 키를 준비합니다. **음성 서비스에는 계속 OpenAI API 사용 요금이 발생합니다.** ChatGPT 구독과 별도입니다.
 4. Strata를 실행하고 API 주소와 배포 모델 ID를 확인합니다. 아래 API 계약을 충족해야 합니다.
-5. `start.cmd`를 한 번 실행해 생성된 `.env`를 채웁니다. 기존 사용자는 `.env.example`의 새 설정을 자신의 `.env`에 추가합니다.
+5. Windows에서는 `start.cmd`, Linux에서는 `./start.sh`를 한 번 실행해 생성된 `.env`를 채웁니다. 기존 사용자는 `.env.example`의 새 설정을 자신의 `.env`에 추가합니다.
 
 ```dotenv
 DISCORD_TOKEN=your-discord-bot-token
@@ -22,12 +22,29 @@ STRATA_API_KEY=
 
 위 포트와 모델 이름은 **예시**입니다. Strata 배포의 실제 값을 입력하세요. `STRATA_BASE_URL`에는 `/chat/completions` 앞부분까지 넣습니다. 봇과 Strata가 서로 다른 PC/컨테이너에서 실행되면 봇에서 접근 가능한 주소를 사용하세요. 컨테이너의 `127.0.0.1`은 해당 컨테이너 자체입니다. API 키는 저장소나 채팅에 올리지 마세요.
 
-6. `start.cmd`를 다시 실행합니다. 음성채널에 들어가 `/ai join`을 실행하세요. 처음에는 명령을 실행한 사람만 수신하며 다른 참가자는 `/ai listen enabled:True`로 참여합니다.
+6. Windows에서는 `start.cmd`, Linux에서는 `./start.sh`를 다시 실행합니다. 음성채널에 들어가 `/ai join`을 실행하세요. 처음에는 명령을 실행한 사람만 수신하며 다른 참가자는 `/ai listen enabled:True`로 참여합니다.
+
+### Linux에서 실행
+
+Node.js 24와 npm을 설치한 뒤 저장소 폴더에서 실행합니다 (최소 Node.js 22.12.0).
+
+```sh
+chmod +x start.sh
+./start.sh
+# 첫 실행으로 생성된 .env에 실제 설정을 입력합니다.
+nano .env
+./start.sh
+```
+
+이미 `.env`를 설정했다면 `./start.sh`만 실행하면 됩니다. 스크립트는 기존 `.env`를 유지하고, 누락되거나 버전이 맞지 않는 의존성을 설치한 뒤 설정·코덱 점검과 명령어 등록을 거쳐 봇을 시작합니다. `Ctrl+C`로 종료합니다. Strata는 별도로 실행해 두어야 하며, 음성 인식·합성에는 계속 온라인 OpenAI를 사용합니다. 다른 폴더에서 스크립트의 경로를 지정해 실행해도 됩니다.
+
+### 수동 실행과 점검
 
 ```sh
 npm install
 npm run check
 npm run check -- --network
+npm run register
 npm start
 ```
 
