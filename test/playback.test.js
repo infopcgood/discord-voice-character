@@ -20,7 +20,7 @@ test('real Discord player naturally drains repeated short and partial-frame resp
       await entersState(audio, AudioPlayerStatus.Playing, 3000);
       await entersState(audio, AudioPlayerStatus.Idle, 3000);
       await completion;
-      assert.ok(resource.playbackDuration >= Math.ceil(samples / 480) * 20);
+      assert.ok(resource.playbackDuration >= (Math.ceil(samples / 480) + 1) * 20);
       assert.equal(source.codec, null);
     }
     assert.deepEqual(errors, []);
@@ -49,16 +49,16 @@ test('direct packets preserve stereo duration, pad the tail, and apply live volu
   const encode = source.codec.encode.bind(source.codec);
   source.codec.encode = (frame, samples) => { frames.push(Buffer.from(frame)); return encode(frame, samples); };
   for await (const packet of source) packets.push(packet);
-  assert.equal(packets.length, 4);
+  assert.equal(packets.length, 5);
   // Opus is lossy; verify exact stereo/resampling invariants before compression.
   for (const frame of frames) {
     for (let i = 0; i < frame.length; i += 4) assert.equal(frame.readInt16LE(i), frame.readInt16LE(i + 2));
   }
-  assert.ok(frames.at(-1).subarray(8).every(value => value === 0));
+  assert.ok(frames.at(-2).subarray(8).every(value => value === 0));
   const decoder = new OpusScript(48000, 2, OpusScript.Application.AUDIO);
   try {
     const decoded = Buffer.concat(packets.map(packet => Buffer.from(decoder.decode(packet))));
-    assert.equal(decoded.length, 3840 * 4); assert.ok(decoded.some(value => value !== 0));
+    assert.equal(decoded.length, 3840 * 5); assert.ok(decoded.some(value => value !== 0));
   } finally { decoder.delete(); }
   const muted = new SpeechPackets(Buffer.concat(Array(10).fill(pcm)), 1); const volumeFrames = [];
   const encodeMuted = muted.codec.encode.bind(muted.codec);
@@ -68,4 +68,19 @@ test('direct packets preserve stereo duration, pad the tail, and apply live volu
   // Readable may prefetch a packet; the remaining audio must honor live mute.
   assert.ok(volumeFrames.at(-1).every(value => value === 0));
   assert.throws(() => new SpeechPackets(Buffer.alloc(1)), /Invalid/);
+});
+
+test('the encoded drain frame carries the delayed tail of a frame-aligned response', async () => {
+  const pcm = Buffer.alloc(960 * 10);
+  // Only the last 5 ms contain speech: the encoder must carry it into the drain.
+  for (let i = pcm.length - 240; i < pcm.length; i += 2) pcm.writeInt16LE(Math.round(12000 * Math.sin(i / 2 * 2 * Math.PI * 440 / 24000)), i);
+  const packets = []; for await (const packet of new SpeechPackets(pcm)) packets.push(packet);
+  assert.equal(packets.length, 11);
+  const decoder = new OpusScript(48000, 2, OpusScript.Application.AUDIO);
+  try {
+    const frames = packets.map(packet => Buffer.from(decoder.decode(packet)));
+    let peak = 0;
+    for (let i = 0; i < frames.at(-1).length; i += 2) peak = Math.max(peak, Math.abs(frames.at(-1).readInt16LE(i)));
+    assert.ok(peak > 1000, `The drain must contain the audible final samples (peak ${peak})`);
+  } finally { decoder.delete(); }
 });

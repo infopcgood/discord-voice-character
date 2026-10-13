@@ -7,7 +7,7 @@ export class SpeechPackets extends Readable {
   constructor(pcm, volume = 1) {
     super({ objectMode: true, highWaterMark: 1 });
     if (!Buffer.isBuffer(pcm) || !pcm.length || pcm.length % 2) throw new Error('Invalid 24 kHz PCM segment');
-    this.pcm = pcm; this.offset = 0; this.previous = 0;
+    this.pcm = pcm; this.offset = 0; this.previous = 0; this.flushed = false;
     this.setVolume(volume);
     this.codec = new OpusScript(48000, 2, OpusScript.Application.AUDIO);
   }
@@ -16,8 +16,14 @@ export class SpeechPackets extends Readable {
     this.volume = volume;
   }
   _read() {
-    if (this.offset >= this.pcm.length) { this.push(null); return; }
+    if (this.offset >= this.pcm.length && this.flushed) { this.push(null); return; }
     try {
+      if (this.offset >= this.pcm.length) {
+        // Drain the default Opus AUDIO encoder's lookahead through the same codec.
+        // Discord's constant silence packets cannot flush these retained samples.
+        this.flushed = true;
+        this.push(Buffer.from(this.codec.encode(Buffer.alloc(3840), 960))); return;
+      }
       const frame = Buffer.alloc(3840); // 20 ms, 48 kHz stereo; zero-pad the final frame.
       const scaled = sample => Math.max(-32768, Math.min(32767, Math.round(sample * this.volume)));
       let index = 0;

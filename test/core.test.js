@@ -17,7 +17,7 @@ test('direct Opus packets decode as Discord receive PCM including a partial last
   const source = new SpeechPackets(pcm);
   const decoder = new prism.opus.Decoder({ rate: 24000, channels: 1, frameSize: 480 });
   const result = await collect(source.pipe(decoder));
-  assert.equal(result.length, 960 * 4); assert.ok(result.some(byte => byte !== 0));
+  assert.equal(result.length, 960 * 5); assert.ok(result.some(byte => byte !== 0));
   assert.equal(source.codec, null);
 });
 test('settings persist per guild and reject unsafe paths or invalid values', () => {
