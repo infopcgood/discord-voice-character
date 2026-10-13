@@ -83,6 +83,23 @@ test('opt-in streams decode actual Opus and remain subscribed during playback', 
     assert.equal(sources.get('2').destroyed, true); assert.equal(bridge.mixer.tracks.has('2'), false);
   } finally { bridge.close(); }
 });
+test('a malformed Opus packet resets only that participant decoder', async () => {
+  const { bridge, api, sources } = fixture();
+  try {
+    await bridge.start();
+    const state = bridge.inputs.get('1');
+    const failedDecoder = state.decoder;
+    sources.get('1').write(Buffer.from([0xff]));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(bridge.closed, false);
+    assert.equal(api.closed, false);
+    assert.equal(sources.get('1').destroyed, false);
+    assert.notEqual(state.decoder, failedDecoder);
+    const decoded = once(state.decoder, 'data');
+    sources.get('1').write(opusPacket());
+    assert.ok((await decoded)[0].length > 0);
+  } finally { bridge.close(); }
+});
 test('server commit schedules one reply; silence ticks cannot create unsolicited replies', async () => {
   const { bridge, api } = fixture();
   try {
